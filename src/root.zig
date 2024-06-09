@@ -322,18 +322,18 @@ pub fn Blake3(options: Options) type {
 
                 comptime var vec_1_offset = 1;
 
-                if (builtin.cpu.arch.isX86()) {
-                    if (vecs_per_column > 2) {
-                        const mask_0_begin = comptime std.simd.extract(mask_0, 0, @divExact(vec_length, 2));
-                        const mask_0_end = comptime std.simd.extract(mask_1, 0, @divExact(vec_length, 2));
-                        const mask_1_begin = comptime std.simd.extract(mask_0, @divExact(vec_length, 2), @divExact(vec_length, 2));
-                        const mask_1_end = comptime std.simd.extract(mask_1, @divExact(vec_length, 2), @divExact(vec_length, 2));
-                        mask_0 = comptime std.simd.join(mask_0_begin, mask_0_end);
-                        mask_1 = comptime std.simd.join(mask_1_begin, mask_1_end);
-                    } else {
-                        vec_1_offset = @min(@divExact(vec_length, 2), 8);
-                    }
+                // if (builtin.cpu.arch.isX86()) {
+                if (vecs_per_column > 2) {
+                    const mask_0_begin = comptime std.simd.extract(mask_0, 0, @divExact(vec_length, 2));
+                    const mask_0_end = comptime std.simd.extract(mask_1, 0, @divExact(vec_length, 2));
+                    const mask_1_begin = comptime std.simd.extract(mask_0, @divExact(vec_length, 2), @divExact(vec_length, 2));
+                    const mask_1_end = comptime std.simd.extract(mask_1, @divExact(vec_length, 2), @divExact(vec_length, 2));
+                    mask_0 = comptime std.simd.join(mask_0_begin, mask_0_end);
+                    mask_1 = comptime std.simd.join(mask_1_begin, mask_1_end);
+                } else {
+                    vec_1_offset = @min(@divExact(vec_length, 2), 8);
                 }
+                // }
 
                 for (0..@divExact(vecs_per_column, 2)) |i| {
                     for (0..@divExact(vecs_per_row, vec_1_offset)) |j| {
