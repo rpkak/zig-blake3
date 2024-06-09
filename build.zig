@@ -11,6 +11,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
+        exe.linkLibC();
         b.installArtifact(exe);
 
         const options = b.addOptions();
@@ -27,6 +28,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
+        exe.linkLibC();
         b.installArtifact(exe);
 
         const options = b.addOptions();

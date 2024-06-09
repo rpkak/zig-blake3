@@ -37,16 +37,16 @@ const MSG_SCHEDULE = [7][16]u4{
     .{ 11, 15, 5, 0, 1, 9, 8, 6, 14, 10, 2, 12, 3, 4, 7, 13 },
 };
 
-// https://gist.github.com/andrewrk/c1c3eebd0a102cd8c923058cae95532c
-pub const _start = void;
+// // https://gist.github.com/andrewrk/c1c3eebd0a102cd8c923058cae95532c
+// pub const _start = void;
 
+// // export fn hashb3(input_len: usize, input: [*]const u8, out: *[32]u8) void {
+// //     Blake3(.{}).hash(input[0..input_len], out);
+// //     std.crypto.hash.Blake3.hash(input[0..input_len], out, .{});
+// // }
 // export fn hashb3(input_len: usize, input: [*]const u8, out: *[32]u8) void {
 //     Blake3(.{}).hash(input[0..input_len], out);
-//     std.crypto.hash.Blake3.hash(input[0..input_len], out, .{});
 // }
-export fn hashb3(input_len: usize, input: [*]const u8, out: *[32]u8) void {
-    Blake3(.{}).hash(input[0..input_len], out);
-}
 
 fn V(len: comptime_int) type {
     if (len == 1) {
