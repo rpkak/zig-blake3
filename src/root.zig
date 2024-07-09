@@ -37,17 +37,6 @@ const MSG_SCHEDULE = [7][16]u4{
     .{ 11, 15, 5, 0, 1, 9, 8, 6, 14, 10, 2, 12, 3, 4, 7, 13 },
 };
 
-// // https://gist.github.com/andrewrk/c1c3eebd0a102cd8c923058cae95532c
-// pub const _start = void;
-
-// // export fn hashb3(input_len: usize, input: [*]const u8, out: *[32]u8) void {
-// //     Blake3(.{}).hash(input[0..input_len], out);
-// //     std.crypto.hash.Blake3.hash(input[0..input_len], out, .{});
-// // }
-// export fn hashb3(input_len: usize, input: [*]const u8, out: *[32]u8) void {
-//     Blake3(.{}).hash(input[0..input_len], out);
-// }
-
 fn V(len: comptime_int) type {
     if (len == 1) {
         return u32;
@@ -187,11 +176,16 @@ pub fn Blake3(options: Options) type {
     return struct {
         const Self = @This();
 
-        key: [8]u32,
         t: u64 = 0,
         flags: u32,
 
-        big_key: [8]Vec,
+        keys: std.meta.Tuple(blk: {
+            var key_types: [vec_len_log + 1]type = undefined;
+            for (0..vec_len_log + 1) |i| {
+                key_types[i] = [8]V(1 << i);
+            }
+            break :blk &key_types;
+        }),
 
         chunk_state_len: u32 = 0,
         chunk_state_chaining_value: [8]u32,
@@ -201,16 +195,17 @@ pub fn Blake3(options: Options) type {
         cv_stack_len: u8 = 0,
 
         fn initInternal(key: [8]u32, flags: u32) Self {
-            var big_key: [8]Vec = undefined;
-            for (0..8) |i| {
-                big_key[i] = splat(vec_len, key[i]);
-            }
-            return .{
-                .key = key,
+            var blake3 = Self{
                 .flags = flags,
                 .chunk_state_chaining_value = key,
-                .big_key = big_key,
+                .keys = undefined,
             };
+            inline for (0..vec_len_log + 1) |i| {
+                for (0..8) |j| {
+                    blake3.keys[i][j] = splat(1 << i, key[j]);
+                }
+            }
+            return blake3;
         }
 
         pub fn init() Self {
@@ -270,20 +265,17 @@ pub fn Blake3(options: Options) type {
         }
 
         fn blocksToValueVectors(comptime count: comptime_int, input: [*]const u8, t_inc: usize, out: *[16]V(count)) void {
-            const vec_length = count;
-            const vec_count = @divExact(16 * count, vec_length);
+            comptime var vecs_per_row = @divExact(16, @min(count, 16));
+            comptime var vecs_per_column = @divExact(16, vecs_per_row);
 
-            comptime var vecs_per_row = @divExact(16, @min(vec_length, 16));
-            comptime var vecs_per_column = @divExact(vec_count, vecs_per_row);
-
-            var vecs: [vec_count]V(vec_length) = undefined;
+            var vecs: [16]V(count) = undefined;
 
             for (0..vecs_per_column) |i| {
                 for (0..@divExact(count, vecs_per_column)) |j| {
                     const t_offset_reversed = @bitReverse(@as(std.meta.Int(.unsigned, @ctz(@as(usize, count))), @intCast(i * @divExact(count, vecs_per_column) + j)));
                     for (0..vecs_per_row) |k| {
                         for (0..@divExact(16, vecs_per_row)) |l| {
-                            index(vec_length, &vecs[vecs_per_row * i + k], @divExact(count, vecs_per_column) * l + j).* =
+                            index(count, &vecs[vecs_per_row * i + k], @divExact(count, vecs_per_column) * l + j).* =
                                 @bitCast(input[CHUNK_LEN * (t_inc * t_offset_reversed) + 4 * (k * @divExact(16, vecs_per_row) + l) ..][0..4].*);
                         }
                     }
@@ -291,7 +283,7 @@ pub fn Blake3(options: Options) type {
             }
 
             if (builtin.cpu.arch.endian() == .big) {
-                for (0..vec_count) |i| {
+                for (0..16) |i| {
                     vecs[i] = @byteSwap(vecs[i]);
                 }
             }
@@ -300,7 +292,7 @@ pub fn Blake3(options: Options) type {
                 vecs_per_column = @divExact(vecs_per_column, 2);
                 vecs_per_row *= 2;
             }) {
-                var new_vecs: [vec_count]V(vec_length) = undefined;
+                var new_vecs: [16]V(count) = undefined;
 
                 const columns_per_vec = @divExact(count, vecs_per_column);
                 const first_column_mask_0 = std.simd.iota(i32, columns_per_vec);
@@ -311,7 +303,7 @@ pub fn Blake3(options: Options) type {
                     columns_per_vec,
                     -columns_per_vec,
                 );
-                const first_column_mask_1 = @as(@Vector(columns_per_vec, i32), @splat(@divExact(vec_length, 2))) + first_column_mask_0;
+                const first_column_mask_1 = @as(@Vector(columns_per_vec, i32), @splat(@divExact(count, 2))) + first_column_mask_0;
                 comptime var mask_1 = repeatShuffleMask(
                     2 * columns_per_vec,
                     @divExact(8, vecs_per_row),
@@ -322,18 +314,16 @@ pub fn Blake3(options: Options) type {
 
                 comptime var vec_1_offset = 1;
 
-                // if (builtin.cpu.arch.isX86()) {
                 if (vecs_per_column > 2) {
-                    const mask_0_begin = comptime std.simd.extract(mask_0, 0, @divExact(vec_length, 2));
-                    const mask_0_end = comptime std.simd.extract(mask_1, 0, @divExact(vec_length, 2));
-                    const mask_1_begin = comptime std.simd.extract(mask_0, @divExact(vec_length, 2), @divExact(vec_length, 2));
-                    const mask_1_end = comptime std.simd.extract(mask_1, @divExact(vec_length, 2), @divExact(vec_length, 2));
+                    const mask_0_begin = comptime std.simd.extract(mask_0, 0, @divExact(count, 2));
+                    const mask_0_end = comptime std.simd.extract(mask_1, 0, @divExact(count, 2));
+                    const mask_1_begin = comptime std.simd.extract(mask_0, @divExact(count, 2), @divExact(count, 2));
+                    const mask_1_end = comptime std.simd.extract(mask_1, @divExact(count, 2), @divExact(count, 2));
                     mask_0 = comptime std.simd.join(mask_0_begin, mask_0_end);
                     mask_1 = comptime std.simd.join(mask_1_begin, mask_1_end);
                 } else {
-                    vec_1_offset = @min(@divExact(vec_length, 2), 8);
+                    vec_1_offset = @min(@divExact(count, 2), 8);
                 }
-                // }
 
                 for (0..@divExact(vecs_per_column, 2)) |i| {
                     for (0..@divExact(vecs_per_row, vec_1_offset)) |j| {
@@ -348,18 +338,7 @@ pub fn Blake3(options: Options) type {
                 }
                 vecs = new_vecs;
             }
-            comptime std.debug.assert(vecs_per_row == vec_count);
-
-            // for (0..vec_count) |i| {
-            //     inline for (0..@divExact(16, vec_count)) |j| {
-            //         out[@divExact(16, vec_count) * i + j] = if (count == 1) index(vec_length, &vecs[i], j).* else @shuffle(
-            //             u32,
-            //             vecs[i],
-            //             undefined,
-            //             @as(@Vector(count, i32), @splat(count * j)) + std.simd.iota(i32, count),
-            //         );
-            //     }
-            // }
+            comptime std.debug.assert(vecs_per_row == 16);
 
             out.* = vecs;
         }
@@ -422,7 +401,7 @@ pub fn Blake3(options: Options) type {
                 const m: [16]u32 = self.cv_stack[8 * (self.cv_stack_len - 2) ..][0..16].*;
                 compress(
                     1,
-                    self.key,
+                    self.keys[0],
                     &m,
                     0,
                     0,
@@ -505,7 +484,7 @@ pub fn Blake3(options: Options) type {
                     self.pushCV(cv, self.t);
 
                     self.input_buffer = [_]u8{0} ** BLOCK_LEN;
-                    self.chunk_state_chaining_value = self.key;
+                    self.chunk_state_chaining_value = self.keys[0];
                     self.chunk_state_len = 0;
                     self.t += 1;
                 }
@@ -521,7 +500,7 @@ pub fn Blake3(options: Options) type {
                 if (subtree_chunks_log == 0) {
                     var out: [8]u32 = undefined;
 
-                    compressCompleteChunksSplitted(1, input.ptr, self.t, undefined, &self.key, self.flags, &out);
+                    compressCompleteChunksSplitted(1, input.ptr, self.t, undefined, &self.keys[0], self.flags, &out);
 
                     self.pushCV(out, self.t);
                     self.t += 1;
@@ -556,7 +535,7 @@ pub fn Blake3(options: Options) type {
                 b.* = if (self.chunk_state_len & BLOCK_LEN_MASK == 0 and self.chunk_state_len != 0) BLOCK_LEN else self.chunk_state_len & BLOCK_LEN_MASK;
                 d.* = self.flags | CHUNK_END | self.startFlag();
             } else {
-                h.* = self.key;
+                h.* = self.keys[0];
                 m.* = self.cv_stack[8 * (cvs_remaining - 2) ..][0..16].*;
                 t = 0;
                 b.* = BLOCK_LEN;
@@ -578,7 +557,7 @@ pub fn Blake3(options: Options) type {
                     m[8..16],
                 );
                 m[0..8].* = self.cv_stack[8 * (cvs_remaining - 1) ..][0..8].*;
-                h.* = self.key;
+                h.* = self.keys[0];
                 t = 0;
                 b.* = BLOCK_LEN;
                 d.* = self.flags | PARENT;
@@ -624,12 +603,6 @@ pub fn Blake3(options: Options) type {
             }
         }
 
-        fn buildKey(self: *const Self, comptime count: comptime_int, out: *[8]V(count)) void {
-            for (0..8) |i| {
-                out[i] = splat(count, self.key[i]);
-            }
-        }
-
         fn compressTwoSubtrees(self: *const Self, input: []const u8, out: *[16]u32) void {
             std.debug.assert(input.len >= 2 * CHUNK_LEN);
 
@@ -639,15 +612,13 @@ pub fn Blake3(options: Options) type {
                     0 => unreachable,
                     inline 1...vec_len_log => |count_log| {
                         const count = 1 << count_log;
-                        var key: [8]V(count) = undefined;
-                        self.buildKey(count, &key);
                         var precompressed_out: [8]V(count) = undefined;
                         compressCompleteChunksSplitted(
                             count,
                             input.ptr,
                             self.t,
                             1,
-                            &key,
+                            &self.keys[count_log],
                             self.flags,
                             &precompressed_out,
                         );
@@ -677,7 +648,7 @@ pub fn Blake3(options: Options) type {
                     input.ptr,
                     t,
                     1,
-                    &self.big_key,
+                    &self.keys[vec_len_log],
                     self.flags,
                     out,
                 );
@@ -700,8 +671,8 @@ pub fn Blake3(options: Options) type {
 
             if (child_chunks == 1) {
                 // TODO: Multithreading
-                compressCompleteChunksSplitted(vec_len, input, t, t_inc, &self.big_key, self.flags, uncompressed_output[0..8]);
-                compressCompleteChunksSplitted(vec_len, right_input, right_t, t_inc, &self.big_key, self.flags, uncompressed_output[8..16]);
+                compressCompleteChunksSplitted(vec_len, input, t, t_inc, &self.keys[vec_len_log], self.flags, uncompressed_output[0..8]);
+                compressCompleteChunksSplitted(vec_len, right_input, right_t, t_inc, &self.keys[vec_len_log], self.flags, uncompressed_output[8..16]);
             } else {
                 const child_child_chunks = @divExact(child_chunks, 2);
                 // TODO: Multithreading
@@ -711,7 +682,7 @@ pub fn Blake3(options: Options) type {
 
             compress(
                 vec_len,
-                self.big_key,
+                self.keys[vec_len_log],
                 &uncompressed_output,
                 splat(vec_len, 0),
                 splat(vec_len, 0),
@@ -739,13 +710,10 @@ pub fn Blake3(options: Options) type {
             } else {
                 const new_count = @divExact(count, 2);
 
-                var key: [8]V(new_count) = undefined;
-                self.buildKey(new_count, &key);
-
                 var new_m: [8]V(new_count) = undefined;
                 compress(
                     new_count,
-                    key,
+                    self.keys[@ctz(@as(usize, new_count))],
                     &.{
                         std.simd.extract(m[0], 0, new_count), std.simd.extract(m[0], new_count, new_count),
                         std.simd.extract(m[1], 0, new_count), std.simd.extract(m[1], new_count, new_count),
