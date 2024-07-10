@@ -86,6 +86,7 @@ inline fn compress(
     b: u32,
     d: u32,
     comptime truncated: bool,
+    comptime mod_2_output_order: bool,
     comptime m_mapping: [16]u4,
     out: *[if (truncated) 8 else 16]V(degree),
 ) void {
@@ -140,16 +141,17 @@ inline fn compress(
         g(&v_3, &v_4, &v_9, &v_14, m[m_mapping[schedule[14]]], m[m_mapping[schedule[15]]]);
     }
 
-    out[0] = v_0 ^ v_8;
-    out[1] = v_1 ^ v_9;
-    out[2] = v_2 ^ v_10;
-    out[3] = v_3 ^ v_11;
-    out[4] = v_4 ^ v_12;
-    out[5] = v_5 ^ v_13;
-    out[6] = v_6 ^ v_14;
-    out[7] = v_7 ^ v_15;
+    out[if (mod_2_output_order) 0 else 0] = v_0 ^ v_8;
+    out[if (mod_2_output_order) 4 else 1] = v_1 ^ v_9;
+    out[if (mod_2_output_order) 1 else 2] = v_2 ^ v_10;
+    out[if (mod_2_output_order) 5 else 3] = v_3 ^ v_11;
+    out[if (mod_2_output_order) 2 else 4] = v_4 ^ v_12;
+    out[if (mod_2_output_order) 6 else 5] = v_5 ^ v_13;
+    out[if (mod_2_output_order) 3 else 6] = v_6 ^ v_14;
+    out[if (mod_2_output_order) 7 else 7] = v_7 ^ v_15;
 
     if (!truncated) {
+        comptime std.debug.assert(!mod_2_output_order);
         out[8] = v_8 ^ h[0];
         out[9] = v_9 ^ h[1];
         out[10] = v_10 ^ h[2];
@@ -158,6 +160,161 @@ inline fn compress(
         out[13] = v_13 ^ h[5];
         out[14] = v_14 ^ h[6];
         out[15] = v_15 ^ h[7];
+    }
+}
+
+fn compressRowVectors(
+    comptime degree: comptime_int,
+    h_0123: V(4 * degree),
+    h_4567: V(4 * degree),
+    m: [4]V(4 * degree),
+    tbd: V(4 * degree),
+    comptime truncated: bool,
+    out: *[if (truncated) 2 else 4]V(4 * degree),
+) void {
+    const RowVec = V(4 * degree);
+
+    var v_0123: RowVec = h_0123;
+    var v_4567: RowVec = h_4567;
+    var v_89ab: RowVec = std.simd.repeat(4 * degree, IV_CONSTANTS[0..4].*);
+    var v_cdef: RowVec = tbd;
+
+    var m_0246: RowVec = m[0];
+    var m_1357: RowVec = m[1];
+    var m_8ace: RowVec = m[2];
+    var m_9bdf: RowVec = m[3];
+
+    inline for (0..7) |i| {
+        // g
+        v_0123 +%= v_4567 +% m_0246;
+        v_cdef = std.math.rotr(RowVec, v_cdef ^ v_0123, 16);
+        v_89ab +%= v_cdef;
+        v_4567 = std.math.rotr(RowVec, v_4567 ^ v_89ab, 12);
+        v_0123 +%= v_4567 +% m_1357;
+        v_cdef = std.math.rotr(RowVec, v_cdef ^ v_0123, 8);
+        v_89ab +%= v_cdef;
+        v_4567 = std.math.rotr(RowVec, v_4567 ^ v_89ab, 7);
+
+        // diagonalization
+        var v_5674 = @shuffle(u32, v_4567, undefined, repeatShuffleMask(4, degree, [_]i32{ 1, 2, 3, 0 }, 4, -4));
+        var v_ab89 = @shuffle(u32, v_89ab, undefined, repeatShuffleMask(4, degree, [_]i32{ 2, 3, 0, 1 }, 4, -4));
+        var v_fcde = @shuffle(u32, v_cdef, undefined, repeatShuffleMask(4, degree, [_]i32{ 3, 0, 1, 2 }, 4, -4));
+
+        // g
+        v_0123 +%= v_5674 +% m_8ace;
+        v_fcde = std.math.rotr(RowVec, v_fcde ^ v_0123, 16);
+        v_ab89 +%= v_fcde;
+        v_5674 = std.math.rotr(RowVec, v_5674 ^ v_ab89, 12);
+        v_0123 +%= v_5674 +% m_9bdf;
+        v_fcde = std.math.rotr(RowVec, v_fcde ^ v_0123, 8);
+        v_ab89 +%= v_fcde;
+        v_5674 = std.math.rotr(RowVec, v_5674 ^ v_ab89, 7);
+
+        // undiagonalization
+        v_4567 = @shuffle(u32, v_5674, undefined, repeatShuffleMask(4, degree, [_]i32{ 3, 0, 1, 2 }, 4, -4));
+        v_89ab = @shuffle(u32, v_ab89, undefined, repeatShuffleMask(4, degree, [_]i32{ 2, 3, 0, 1 }, 4, -4));
+        v_cdef = @shuffle(u32, v_fcde, undefined, repeatShuffleMask(4, degree, [_]i32{ 1, 2, 3, 0 }, 4, -4));
+
+        if (comptime i != 6) {
+            // permuation
+            // 0 1 2 3 4 5 6 7 8 9 a b c d e f
+            // 2 6 3 a 7 0 4 d 1 b c 5 9 e f 8
+            const m_2374 = @shuffle(u32, m_0246, m_1357, repeatShuffleMask(4, degree, [_]i32{ 1, ~@as(i32, 1), ~@as(i32, 3), 2 }, 4, -4));
+            const m_ad = @shuffle(u32, m_8ace, m_9bdf, repeatShuffleMask(2, degree, [_]i32{ 1, ~@as(i32, 2) }, 4, -4));
+            const m_6a0d = @shuffle(u32, m_0246, m_ad, repeatShuffleMask(4, degree, [_]i32{ 3, ~@as(i32, 0), 0, ~@as(i32, 1) }, 4, -2));
+            const m_1c = @shuffle(u32, m_1357, m_8ace, repeatShuffleMask(2, degree, [_]i32{ 0, ~@as(i32, 2) }, 4, -4));
+            const m_1c9f = @shuffle(u32, m_9bdf, m_1c, repeatShuffleMask(4, degree, [_]i32{ ~@as(i32, 0), ~@as(i32, 1), 0, 3 }, 4, -2));
+            const m_b5 = @shuffle(u32, m_9bdf, m_1357, repeatShuffleMask(2, degree, [_]i32{ 1, ~@as(i32, 2) }, 4, -4));
+            const m_b5e8 = @shuffle(u32, m_8ace, m_b5, repeatShuffleMask(4, degree, [_]i32{ ~@as(i32, 0), ~@as(i32, 1), 3, 0 }, 4, -2));
+            m_0246 = m_2374;
+            m_1357 = m_6a0d;
+            m_8ace = m_1c9f;
+            m_9bdf = m_b5e8;
+        }
+    }
+
+    out[0] = v_0123 ^ v_89ab;
+    out[1] = v_4567 ^ v_cdef;
+    if (!truncated) {
+        out[2] = v_89ab ^ h_0123;
+        out[3] = v_cdef ^ h_4567;
+    }
+}
+
+// fn blocksToValueVectors(comptime count: comptime_int, input: [*]const u8, t_inc: usize, out: *[16]V(count)) void {
+//     inline for (0..count) |i| {
+//         const i_reversed = @bitReverse(@as(std.meta.Int(.unsigned, @ctz(@as(usize, count))), @intCast(i)));
+//         // @prefetch(input[CHUNK_LEN * (t_inc * i_reversed) ..][0..BLOCK_LEN], .{});
+//         for (0..16) |k| {
+//             index(count, &out[k], i).* =
+//                 std.mem.readInt(u32, input[CHUNK_LEN * (t_inc * i_reversed) + 4 * k ..][0..4], .little);
+//         }
+//     }
+// }
+
+// fn blocksToValueVectors(comptime count: comptime_int, input: [*]const u8, t_inc: usize, comptime half_half: bool, out: *[16]V(count)) void {
+//     const parts = if (half_half) 2 else 1;
+//     for (0..@divExact(count, parts)) |i| {
+//         for (0..parts) |j| {
+//             for (0..16) |k| {
+//                 index(count, &out[k], @divExact(count, parts) * j + i).* =
+//                     std.mem.readInt(u32, input[CHUNK_LEN * (t_inc * (parts * i + j)) + 4 * k ..][0..4], .little);
+//             }
+//         }
+//     }
+// }
+
+fn blocksToRowVectors(comptime count: comptime_int, input: [*]const u8, t_inc: usize, out: *[4]V(4 * count)) void {
+    for (0..count) |i| {
+        for (0..2) |j| {
+            for (0..4) |k| {
+                for (0..2) |l| {
+                    out[2 * j + l][4 * i + k] =
+                        std.mem.readInt(u32, input[CHUNK_LEN * (t_inc * i) + 32 * j + 8 * k + 4 * l ..][0..4], .little);
+                }
+            }
+        }
+    }
+}
+
+fn compressRowVectorChunks(
+    comptime count: comptime_int,
+    input: *const [CHUNK_LEN * count]u8,
+    t: u64,
+    key: *const [2]V(4),
+    flags: u32,
+    out: *[2]V(4 * count),
+) void {
+    var chunk_state_chaining_value = [2]V(4 * count){
+        std.simd.repeat(4 * count, key[0]),
+        std.simd.repeat(4 * count, key[1]),
+    };
+
+    for (0..CHUNK_LEN / BLOCK_LEN) |i| {
+        var m: [4]V(4 * count) = undefined;
+
+        blocksToRowVectors(count, input[BLOCK_LEN * i ..].ptr, 1, &m);
+
+        var tbd: V(4 * count) = undefined;
+        for (0..count) |j| {
+            tbd[4 * j + 0] = @truncate(t + j);
+            tbd[4 * j + 1] = @truncate((t + j) >> 32);
+            tbd[4 * j + 2] = BLOCK_LEN;
+            tbd[4 * j + 3] = if (i == 0) flags | CHUNK_START else if (i == 15) flags | CHUNK_END else flags;
+        }
+
+        compressRowVectors(
+            count,
+            chunk_state_chaining_value[0],
+            chunk_state_chaining_value[1],
+            m,
+            tbd,
+            true,
+            if (i == 15)
+                out
+            else
+                &chunk_state_chaining_value,
+        );
     }
 }
 
@@ -173,39 +330,54 @@ pub fn Blake3(options: Options) type {
     const vec_len_log = @ctz(@as(usize, vec_len));
     const Vec = V(vec_len);
 
+    const row_vector_support = vec_len_log >= 2;
+
+    const half_vec_len = if (row_vector_support) 1 << (vec_len_log - 1) else {};
+    const HalfVec = if (row_vector_support) V(half_vec_len) else {};
+
+    // const HalfCompressionM = if (row_vector_support) [2]V(4) else [8]u32;
+    // const SingleCompressionM = if (row_vector_support) [4]V(4) else [16]u32;
+
+    const Element = if (row_vector_support) V(4) else u32;
+    const elements_per_8 = if (row_vector_support) 2 else 8;
+
     return struct {
         const Self = @This();
 
+        key: [elements_per_8]Element,
         t: u64 = 0,
         flags: u32,
 
-        keys: std.meta.Tuple(blk: {
-            var key_types: [vec_len_log + 1]type = undefined;
-            for (0..vec_len_log + 1) |i| {
-                key_types[i] = [8]V(1 << i);
-            }
-            break :blk &key_types;
-        }),
+        big_key: [8]Vec,
+        half_big_key: if (row_vector_support) [8]HalfVec else void,
 
         chunk_state_len: u32 = 0,
-        chunk_state_chaining_value: [8]u32,
+        chunk_state_chaining_value: [elements_per_8]Element,
         input_buffer: [BLOCK_LEN]u8 = [_]u8{0} ** BLOCK_LEN,
 
-        cv_stack: [(64 - CHUNK_LEN_LOG + 1) * 8]u32 = undefined,
+        cv_stack: [(64 - CHUNK_LEN_LOG + 1) * elements_per_8]Element = undefined,
         cv_stack_len: u8 = 0,
 
         fn initInternal(key: [8]u32, flags: u32) Self {
-            var blake3 = Self{
-                .flags = flags,
-                .chunk_state_chaining_value = key,
-                .keys = undefined,
-            };
-            inline for (0..vec_len_log + 1) |i| {
-                for (0..8) |j| {
-                    blake3.keys[i][j] = splat(1 << i, key[j]);
+            var big_key: [8]Vec = undefined;
+            var half_big_key: if (row_vector_support) [8]HalfVec else void = undefined;
+            for (0..8) |i| {
+                big_key[i] = splat(vec_len, key[i]);
+                if (row_vector_support) {
+                    half_big_key[i] = splat(half_vec_len, key[i]);
                 }
             }
-            return blake3;
+            const simple_key = if (row_vector_support)
+                [2]V(4){ key[0..4].*, key[4..8].* }
+            else
+                key;
+            return .{
+                .key = simple_key,
+                .flags = flags,
+                .chunk_state_chaining_value = simple_key,
+                .big_key = big_key,
+                .half_big_key = half_big_key,
+            };
         }
 
         pub fn init() Self {
@@ -264,7 +436,7 @@ pub fn Blake3(options: Options) type {
             deriveKeyFromContextHash(&context_hash, key_material, out);
         }
 
-        fn blocksToValueVectors(comptime count: comptime_int, input: [*]const u8, t_inc: usize, out: *[16]V(count)) void {
+        fn blocksToValueVectors(comptime count: comptime_int, input: [*]const u8, t_inc: usize, comptime half_half: bool, out: *[16]V(count)) void {
             comptime var vecs_per_row = @divExact(16, @min(count, 16));
             comptime var vecs_per_column = @divExact(16, vecs_per_row);
 
@@ -272,11 +444,16 @@ pub fn Blake3(options: Options) type {
 
             for (0..vecs_per_column) |i| {
                 for (0..@divExact(count, vecs_per_column)) |j| {
-                    const t_offset_reversed = @bitReverse(@as(std.meta.Int(.unsigned, @ctz(@as(usize, count))), @intCast(i * @divExact(count, vecs_per_column) + j)));
+                    // const t_offset_reversed = @bitReverse(@as(std.meta.Int(.unsigned, @ctz(@as(usize, count))), @intCast(i * @divExact(count, vecs_per_column) + j)));
+                    var t_offset = i * @divExact(count, vecs_per_column) + j;
+                    if (half_half) {
+                        t_offset = 2 * (t_offset % @divExact(count, 2)) + t_offset / @divExact(count, 2);
+                    }
+
                     for (0..vecs_per_row) |k| {
                         for (0..@divExact(16, vecs_per_row)) |l| {
                             index(count, &vecs[vecs_per_row * i + k], @divExact(count, vecs_per_column) * l + j).* =
-                                @bitCast(input[CHUNK_LEN * (t_inc * t_offset_reversed) + 4 * (k * @divExact(16, vecs_per_row) + l) ..][0..4].*);
+                                @bitCast(input[CHUNK_LEN * (t_inc * t_offset) + 4 * (k * @divExact(16, vecs_per_row) + l) ..][0..4].*);
                         }
                     }
                 }
@@ -350,6 +527,8 @@ pub fn Blake3(options: Options) type {
             t_inc: usize,
             key: *const [8]V(count),
             flags: u32,
+            comptime mod_2_output_order: bool,
+            comptime half_half: bool,
             out: *[8]V(count),
         ) void {
             const CountVec = V(count);
@@ -362,8 +541,18 @@ pub fn Blake3(options: Options) type {
                 t_0 = @truncate(t >> 0);
                 t_1 = @truncate(t >> 32);
             } else {
-                const reversed_counting: @Vector(count, u64) = @bitReverse(std.simd.iota(std.meta.Int(.unsigned, @ctz(@as(usize, count))), count));
-                const t_vec = @as(@Vector(count, u64), @splat(t)) + @as(@Vector(count, u64), @splat(t_inc)) * reversed_counting;
+                // const reversed_counting: @Vector(count, u64) = @bitReverse(std.simd.iota(std.meta.Int(.unsigned, @ctz(@as(usize, count))), count));
+                // const t_vec = @as(@Vector(count, u64), @splat(t)) + @as(@Vector(count, u64), @splat(t_inc)) * reversed_counting;
+                const factor = if (half_half)
+                    std.simd.join(
+                        @as(@Vector(@divExact(count, 2), u64), @splat(2)) * std.simd.iota(u64, @divExact(count, 2)),
+                        @as(@Vector(@divExact(count, 2), u64), @splat(1)) +
+                            @as(@Vector(@divExact(count, 2), u64), @splat(2)) * std.simd.iota(u64, @divExact(count, 2)),
+                    )
+                else
+                    std.simd.iota(u64, count);
+
+                const t_vec = @as(@Vector(count, u64), @splat(t)) + @as(@Vector(count, u64), @splat(t_inc)) * factor;
 
                 t_0 = @truncate(t_vec >> @splat(0));
                 t_1 = @truncate(t_vec >> @splat(32));
@@ -371,7 +560,7 @@ pub fn Blake3(options: Options) type {
 
             inline for (0..(CHUNK_LEN / BLOCK_LEN)) |i| {
                 var m: [16]CountVec = undefined;
-                blocksToValueVectors(count, input[i * BLOCK_LEN ..], t_inc, &m);
+                blocksToValueVectors(count, input[i * BLOCK_LEN ..], t_inc, half_half, &m);
 
                 compress(
                     count,
@@ -387,6 +576,7 @@ pub fn Blake3(options: Options) type {
                     else
                         flags,
                     true,
+                    mod_2_output_order and i == 15,
                     .{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 },
                     if (i == 15)
                         out
@@ -398,26 +588,43 @@ pub fn Blake3(options: Options) type {
 
         fn mergeCVStack(self: *Self, chunk_counter: u64) void {
             for (0..self.cv_stack_len - @popCount(chunk_counter)) |_| {
-                const m: [16]u32 = self.cv_stack[8 * (self.cv_stack_len - 2) ..][0..16].*;
-                compress(
-                    1,
-                    self.keys[0],
-                    &m,
-                    0,
-                    0,
-                    BLOCK_LEN,
-                    self.flags | PARENT,
-                    true,
-                    .{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 },
-                    self.cv_stack[8 * (self.cv_stack_len - 2) ..][0..8],
-                );
+                const m: [2 * elements_per_8]Element = self.cv_stack[elements_per_8 * (self.cv_stack_len - 2) ..][0 .. 2 * elements_per_8].*;
+                //const m: [16]u32 = self.cv_stack[8 * (self.cv_stack_len - 2) ..][0..16].*;
+                if (row_vector_support) {
+                    var out: [2]V(4) = undefined;
+                    compressRowVectors(
+                        1,
+                        self.key[0],
+                        self.key[1],
+                        m,
+                        .{ 0, 0, BLOCK_LEN, self.flags | PARENT },
+                        true,
+                        &out,
+                    );
+                    self.cv_stack[elements_per_8 * (self.cv_stack_len - 2) + 0] = @shuffle(u32, out[0], out[1], [_]i32{ 0, 2, ~@as(i32, 0), ~@as(i32, 2) });
+                    self.cv_stack[elements_per_8 * (self.cv_stack_len - 2) + 1] = @shuffle(u32, out[0], out[1], [_]i32{ 1, 3, ~@as(i32, 1), ~@as(i32, 3) });
+                } else {
+                    compress(
+                        1,
+                        self.key,
+                        &m,
+                        0,
+                        0,
+                        BLOCK_LEN,
+                        self.flags | PARENT,
+                        true,
+                        false,
+                        .{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 },
+                        self.cv_stack[elements_per_8 * (self.cv_stack_len - 2) ..][0..elements_per_8],
+                    );
+                }
                 self.cv_stack_len -= 1;
             }
         }
 
-        fn pushCV(self: *Self, new_cv: [8]u32, chunk_counter: u64) void {
+        fn pushCV(self: *Self, new_cv: [elements_per_8]Element, chunk_counter: u64) void {
             self.mergeCVStack(chunk_counter);
-            self.cv_stack[8 * self.cv_stack_len ..][0..8].* = new_cv;
+            self.cv_stack[elements_per_8 * self.cv_stack_len ..][0..elements_per_8].* = new_cv;
             self.cv_stack_len += 1;
         }
 
@@ -428,22 +635,42 @@ pub fn Blake3(options: Options) type {
                 0;
         }
 
-        fn compressChunkStateBlock(self: *Self, input: *const [BLOCK_LEN]u8, output: *[8]u32) void {
+        fn compressChunkStateBlock(self: *Self, input: *const [BLOCK_LEN]u8, output: *[elements_per_8]Element) void {
             std.debug.assert(self.chunk_state_len & BLOCK_LEN_MASK == 0);
-            var m: [16]u32 = undefined;
-            blocksToValueVectors(1, input, undefined, &m);
-            compress(
-                1,
-                self.chunk_state_chaining_value,
-                &m,
-                @truncate(self.t >> 0),
-                @truncate(self.t >> 32),
-                BLOCK_LEN,
-                self.flags | self.startFlag() | if (self.chunk_state_len == CHUNK_LEN) CHUNK_END else 0,
-                true,
-                .{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 },
-                output,
-            );
+            if (row_vector_support) {
+                var m: [4]V(4) = undefined;
+                blocksToRowVectors(1, input, undefined, &m);
+                compressRowVectors(
+                    1,
+                    self.chunk_state_chaining_value[0],
+                    self.chunk_state_chaining_value[1],
+                    m,
+                    .{
+                        @truncate(self.t >> 0),
+                        @truncate(self.t >> 32),
+                        BLOCK_LEN,
+                        self.flags | self.startFlag() | if (self.chunk_state_len == CHUNK_LEN) CHUNK_END else 0,
+                    },
+                    true,
+                    output,
+                );
+            } else {
+                var m: [16]u32 = undefined;
+                blocksToValueVectors(1, input, undefined, false, &m);
+                compress(
+                    1,
+                    self.chunk_state_chaining_value,
+                    &m,
+                    @truncate(self.t >> 0),
+                    @truncate(self.t >> 32),
+                    BLOCK_LEN,
+                    self.flags | self.startFlag() | if (self.chunk_state_len == CHUNK_LEN) CHUNK_END else 0,
+                    true,
+                    false,
+                    .{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 },
+                    output,
+                );
+            }
         }
 
         fn updateChunkState(self: *Self, input_slice: []const u8) void {
@@ -478,13 +705,20 @@ pub fn Blake3(options: Options) type {
                 self.updateChunkState(input[0..take]);
                 input = input[take..];
                 if (input.len != 0) {
-                    var cv: [8]u32 = undefined;
-                    self.compressChunkStateBlock(&self.input_buffer, &cv);
+                    var cv: [elements_per_8]Element = undefined;
+                    if (row_vector_support) {
+                        var out: [2]V(4) = undefined;
+                        self.compressChunkStateBlock(&self.input_buffer, &out);
+                        cv[0] = @shuffle(u32, out[0], out[1], [_]i32{ 0, 2, ~@as(i32, 0), ~@as(i32, 2) });
+                        cv[1] = @shuffle(u32, out[0], out[1], [_]i32{ 1, 3, ~@as(i32, 1), ~@as(i32, 3) });
+                    } else {
+                        self.compressChunkStateBlock(&self.input_buffer, &cv);
+                    }
 
                     self.pushCV(cv, self.t);
 
                     self.input_buffer = [_]u8{0} ** BLOCK_LEN;
-                    self.chunk_state_chaining_value = self.keys[0];
+                    self.chunk_state_chaining_value = self.key;
                     self.chunk_state_len = 0;
                     self.t += 1;
                 }
@@ -498,9 +732,16 @@ pub fn Blake3(options: Options) type {
                     @min(subtree_chunks_log_upper_bound, @ctz(self.t));
 
                 if (subtree_chunks_log == 0) {
-                    var out: [8]u32 = undefined;
+                    var out: [elements_per_8]Element = undefined;
 
-                    compressCompleteChunksSplitted(1, input.ptr, self.t, undefined, &self.keys[0], self.flags, &out);
+                    if (row_vector_support) {
+                        var precompressed_out: [2]V(4) = undefined;
+                        compressRowVectorChunks(1, input[0..CHUNK_LEN], self.t, &self.key, self.flags, &precompressed_out);
+                        out[0] = @shuffle(u32, precompressed_out[0], precompressed_out[1], [_]i32{ 0, 2, ~@as(i32, 0), ~@as(i32, 2) });
+                        out[1] = @shuffle(u32, precompressed_out[0], precompressed_out[1], [_]i32{ 1, 3, ~@as(i32, 1), ~@as(i32, 3) });
+                    } else {
+                        compressCompleteChunksSplitted(1, input.ptr, self.t, undefined, &self.key, self.flags, false, false, &out);
+                    }
 
                     self.pushCV(out, self.t);
                     self.t += 1;
@@ -508,12 +749,10 @@ pub fn Blake3(options: Options) type {
                 } else {
                     const subtree_chunks = @as(usize, 1) << subtree_chunks_log;
 
-                    var subtree_children: [16]u32 = undefined;
-
+                    var subtree_children: [2 * elements_per_8]Element = undefined;
                     self.compressTwoSubtrees(input[0 .. CHUNK_LEN * subtree_chunks], &subtree_children);
-
-                    self.pushCV(subtree_children[0..8].*, self.t);
-                    self.pushCV(subtree_children[8..16].*, self.t + @divExact(subtree_chunks, 2));
+                    self.pushCV(subtree_children[0..elements_per_8].*, self.t);
+                    self.pushCV(subtree_children[elements_per_8 .. 2 * elements_per_8].*, self.t + @divExact(subtree_chunks, 2));
                     self.t += subtree_chunks;
                     input = input[CHUNK_LEN * subtree_chunks ..];
                 }
@@ -525,18 +764,22 @@ pub fn Blake3(options: Options) type {
             }
         }
 
-        fn rootComprssion(self: *const Self, h: *[8]u32, m: *[16]u32, b: *u32, d: *u32) void {
+        fn rootComprssion(self: *const Self, h: *[elements_per_8]Element, m: *[2 * elements_per_8]Element, b: *u32, d: *u32) void {
             var cvs_remaining = self.cv_stack_len;
             var t: u64 = undefined;
             if (self.chunk_state_len != 0 or self.cv_stack_len == 0) {
                 h.* = self.chunk_state_chaining_value;
-                blocksToValueVectors(1, &self.input_buffer, undefined, m);
+                if (row_vector_support) {
+                    blocksToRowVectors(1, &self.input_buffer, undefined, m);
+                } else {
+                    blocksToValueVectors(1, &self.input_buffer, undefined, false, m);
+                }
                 t = self.t;
                 b.* = if (self.chunk_state_len & BLOCK_LEN_MASK == 0 and self.chunk_state_len != 0) BLOCK_LEN else self.chunk_state_len & BLOCK_LEN_MASK;
                 d.* = self.flags | CHUNK_END | self.startFlag();
             } else {
-                h.* = self.keys[0];
-                m.* = self.cv_stack[8 * (cvs_remaining - 2) ..][0..16].*;
+                h.* = self.key;
+                m.* = self.cv_stack[elements_per_8 * (cvs_remaining - 2) ..][0 .. 2 * elements_per_8].*;
                 t = 0;
                 b.* = BLOCK_LEN;
                 d.* = self.flags | PARENT;
@@ -544,20 +787,37 @@ pub fn Blake3(options: Options) type {
             }
 
             while (cvs_remaining != 0) : (cvs_remaining -= 1) {
-                compress(
-                    1,
-                    h.*,
-                    m,
-                    @truncate(t >> 0),
-                    @truncate(t >> 32),
-                    b.*,
-                    d.*,
-                    true,
-                    .{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 },
-                    m[8..16],
-                );
-                m[0..8].* = self.cv_stack[8 * (cvs_remaining - 1) ..][0..8].*;
-                h.* = self.keys[0];
+                if (row_vector_support) {
+                    var precompressed_out: [2]V(4) = undefined;
+                    compressRowVectors(
+                        1,
+                        h[0],
+                        h[1],
+                        m.*,
+                        .{ @truncate(t >> 0), @truncate(t >> 32), b.*, d.* },
+                        true,
+                        &precompressed_out,
+                    );
+
+                    m[2] = @shuffle(u32, precompressed_out[0], precompressed_out[1], [_]i32{ 0, 2, ~@as(i32, 0), ~@as(i32, 2) });
+                    m[3] = @shuffle(u32, precompressed_out[0], precompressed_out[1], [_]i32{ 1, 3, ~@as(i32, 1), ~@as(i32, 3) });
+                } else {
+                    compress(
+                        1,
+                        h.*,
+                        m,
+                        @truncate(t >> 0),
+                        @truncate(t >> 32),
+                        b.*,
+                        d.*,
+                        true,
+                        false,
+                        .{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 },
+                        m[elements_per_8 .. 2 * elements_per_8],
+                    );
+                }
+                m[0..elements_per_8].* = self.cv_stack[elements_per_8 * (cvs_remaining - 1) ..][0..elements_per_8].*;
+                h.* = self.key;
                 t = 0;
                 b.* = BLOCK_LEN;
                 d.* = self.flags | PARENT;
@@ -569,8 +829,8 @@ pub fn Blake3(options: Options) type {
         pub fn final(self: *const Self, out: []u8) void {
             var output = out;
 
-            var h: [8]u32 = undefined;
-            var m: [16]u32 = undefined;
+            var h: [elements_per_8]Element = undefined;
+            var m: [2 * elements_per_8]Element = undefined;
             var b: u32 = undefined;
             var d: u32 = undefined;
             self.rootComprssion(&h, &m, &b, &d);
@@ -579,21 +839,40 @@ pub fn Blake3(options: Options) type {
 
             while (output.len != 0) : (t += 1) {
                 var uncopied_out: [64]u8 = undefined;
-                var lil_endian_out: [16]u32 = undefined;
-                compress(
-                    1,
-                    h,
-                    &m,
-                    @truncate(t >> 0),
-                    @truncate(t >> 32),
-                    b,
-                    d,
-                    false,
-                    .{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 },
-                    &lil_endian_out,
-                );
-                for (0..16) |i| {
-                    std.mem.writeInt(u32, uncopied_out[4 * i ..][0..4], lil_endian_out[i], .little);
+                if (row_vector_support) {
+                    var lil_endian_out: [4]V(4) = undefined;
+                    compressRowVectors(
+                        1,
+                        h[0],
+                        h[1],
+                        m,
+                        .{ @truncate(t >> 0), @truncate(t >> 32), b, d },
+                        false,
+                        &lil_endian_out,
+                    );
+                    for (0..4) |i| {
+                        for (0..4) |j| {
+                            std.mem.writeInt(u32, uncopied_out[16 * i + 4 * j ..][0..4], lil_endian_out[i][j], .little);
+                        }
+                    }
+                } else {
+                    var lil_endian_out: [16]u32 = undefined;
+                    compress(
+                        1,
+                        h,
+                        &m,
+                        @truncate(t >> 0),
+                        @truncate(t >> 32),
+                        b,
+                        d,
+                        false,
+                        false,
+                        .{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 },
+                        &lil_endian_out,
+                    );
+                    for (0..16) |i| {
+                        std.mem.writeInt(u32, uncopied_out[4 * i ..][0..4], lil_endian_out[i], .little);
+                    }
                 }
 
                 const take = @min(output.len, 64);
@@ -603,43 +882,236 @@ pub fn Blake3(options: Options) type {
             }
         }
 
-        fn compressTwoSubtrees(self: *const Self, input: []const u8, out: *[16]u32) void {
-            std.debug.assert(input.len >= 2 * CHUNK_LEN);
+        // fn buildKey(self: *const Self, comptime count: comptime_int, out: *[8]V(count)) void {
+        //     for (0..8) |i| {
+        //         out[i] = splat(count, self.key[i]);
+        //     }
+        // }
 
-            if (vec_len > 1) {
+        // fn compressTwoSubtrees(self: *const Self, input: []const u8, out: *[2 * elements_per_8]Element) void {
+        //     // assert has 2 chunks min
+        //     // if (row_vector_support) {
+        //     //     const chunk_count_log = @ctz(input.len) - CHUNK_LEN_LOG;
+
+        //     //     if (vec_len_log > 2) {
+        //     //         switch (chunk_count_log) {
+        //     //             0 => unreachable,
+        //     //             inline 1...vec_len_log - 2 => |count_log| {
+        //     //                 const count = 1 << count_log;
+        //     //                 var precompressed_out: [2]V(4 * count) = undefined;
+        //     //                 // assert: next line has complete input
+        //     //                 compressRowVectorChunks(count, input[0 .. CHUNK_LEN * count], self.t, &self.key, self.flags, &precompressed_out);
+
+        //     //                 // TODO: maybe shuffle only 2 times
+        //     //                 const m = [4]V(2 * count){
+        //     //                     @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ 0, 2, ~@as(i32, 0), ~@as(i32, 2) }, 8, -8)),
+        //     //                     @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ 1, 3, ~@as(i32, 1), ~@as(i32, 3) }, 8, -8)),
+        //     //                     @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ 4, 6, ~@as(i32, 4), ~@as(i32, 6) }, 8, -8)),
+        //     //                     @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ 5, 7, ~@as(i32, 5), ~@as(i32, 7) }, 8, -8)),
+        //     //                 };
+
+        //     //                 self.compressTwoSubtreesRowVectors(@divExact(count, 2), m, out);
+        //     //                 return;
+        //     //             },
+        //     //             else => {},
+        //     //         }
+        //     //     }
+
+        //     //     var precompressed_out: [4]Vec = undefined;
+        //     //     if (chunk_count_log == vec_len_log - 1) {
+        //     //         compressCompleteChunksSplitted(
+        //     //             half_vec_len,
+        //     //             input.ptr,
+        //     //             self.t,
+        //     //             1,
+        //     //             &self.half_big_key,
+        //     //             self.flags,
+        //     //             true,
+        //     //             false,
+        //     //             @ptrCast(&precompressed_out),
+        //     //         );
+        //     //     } else {
+        //     //         // TODO optimize
+
+        //     //         var other_precompressed_out: [8]Vec = undefined;
+
+        //     //         self.compressSplitCompleteSubtrees(input, self.t, true, &other_precompressed_out);
+
+        //     //         var other_other_precompressed_out: [16]HalfVec = undefined;
+
+        //     //         for (0..8) |i| {
+        //     //             for (0..half_vec_len) |j| {
+        //     //                 other_other_precompressed_out[i][j] = other_precompressed_out[i][j];
+        //     //                 other_other_precompressed_out[8 + i][j] = other_precompressed_out[i][half_vec_len + j];
+        //     //             }
+        //     //         }
+
+        //     //         compressValueVectors(
+        //     //             half_vec_len,
+        //     //             self.half_big_key,
+        //     //             other_other_precompressed_out,
+        //     //             splat(half_vec_len, 0),
+        //     //             splat(half_vec_len, 0),
+        //     //             BLOCK_LEN,
+        //     //             self.flags | PARENT,
+        //     //             true,
+        //     //             true,
+        //     //             @ptrCast(&precompressed_out),
+        //     //         );
+        //     //     }
+
+        //     //     const m = [4]Vec{
+        //     //         @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(vec_len, 4), [_]i32{ 0, half_vec_len + 0, ~@as(i32, 0), ~@as(i32, half_vec_len + 0) }, 2, -2)),
+        //     //         @shuffle(u32, precompressed_out[2], precompressed_out[3], repeatShuffleMask(4, @divExact(vec_len, 4), [_]i32{ 0, half_vec_len + 0, ~@as(i32, 0), ~@as(i32, half_vec_len + 0) }, 2, -2)),
+        //     //         @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(vec_len, 4), [_]i32{ 1, half_vec_len + 1, ~@as(i32, 1), ~@as(i32, half_vec_len + 1) }, 2, -2)),
+        //     //         @shuffle(u32, precompressed_out[2], precompressed_out[3], repeatShuffleMask(4, @divExact(vec_len, 4), [_]i32{ 1, half_vec_len + 1, ~@as(i32, 1), ~@as(i32, half_vec_len + 1) }, 2, -2)),
+        //     //     };
+
+        //     //     self.compressTwoSubtreesRowVectors(@divExact(vec_len, 4), m, out);
+
+        //     if (vec_len > 1) {
+        //         const chunk_count_log = @ctz(input.len) - CHUNK_LEN_LOG;
+        //         switch (chunk_count_log) {
+        //             0 => unreachable,
+        //             inline 1...vec_len_log => |count_log| {
+        //                 const count = 1 << count_log;
+        //                 var key: [8]V(count) = undefined;
+        //                 self.buildKey(count, &key);
+        //                 var precompressed_out: [8]V(count) = undefined;
+        //                 compressCompleteChunksSplitted(
+        //                     count,
+        //                     input.ptr,
+        //                     self.t,
+        //                     1,
+        //                     &key,
+        //                     self.flags,
+        //                     false,
+        //                     &precompressed_out,
+        //                 );
+        //                 self.compressTwoSubtreesRecursive(count, precompressed_out, out);
+        //             },
+        //             else => {
+        //                 var precompressed_out: [8]Vec = undefined;
+        //                 self.compressSplitCompleteSubtrees(input, self.t, &precompressed_out);
+        //                 self.compressTwoSubtreesRecursive(vec_len, precompressed_out, out);
+        //             },
+        //         }
+        //         // } else if (vec_len == 2) {
+        //         //     var precompressed_out: [8]Vec = undefined;
+        //         //     self.compressSplitCompleteSubtrees(input, self.t, false, &precompressed_out);
+        //         //     for (0..2) |i| {
+        //         //         for (0..8) |j| {
+        //         //             out[8 * i + j] = precompressed_out[j][i];
+        //         //         }
+        //         //     }
+        //     } else {
+        //         const half = @divExact(input.len, 2);
+        //         const half_chunks = @divExact(half, CHUNK_LEN);
+        //         // TODO: Multithreading
+        //         self.compressSplitCompleteSubtrees(input[0..half], self.t, out[0..elements_per_8]);
+        //         self.compressSplitCompleteSubtrees(input[half..], self.t + half_chunks, out[elements_per_8 .. 2 * elements_per_8]);
+        //     }
+        // }
+
+        fn compressTwoSubtrees(self: *const Self, input: []const u8, out: *[2 * elements_per_8]Element) void {
+            // assert has 2 chunks min
+            if (row_vector_support) {
                 const chunk_count_log = @ctz(input.len) - CHUNK_LEN_LOG;
-                switch (chunk_count_log) {
-                    0 => unreachable,
-                    inline 1...vec_len_log => |count_log| {
-                        const count = 1 << count_log;
-                        var precompressed_out: [8]V(count) = undefined;
-                        compressCompleteChunksSplitted(
-                            count,
-                            input.ptr,
-                            self.t,
-                            1,
-                            &self.keys[count_log],
-                            self.flags,
-                            &precompressed_out,
-                        );
-                        self.compressTwoSubtreesRecursive(count, precompressed_out, out);
-                    },
-                    else => {
-                        var precompressed_out: [8]Vec = undefined;
-                        self.compressSplitCompleteSubtrees(input, self.t, &precompressed_out);
-                        self.compressTwoSubtreesRecursive(vec_len, precompressed_out, out);
-                    },
+
+                if (vec_len_log > 2) {
+                    switch (chunk_count_log) {
+                        0 => unreachable,
+                        inline 1...vec_len_log - 2 => |count_log| {
+                            const count = 1 << count_log;
+                            var precompressed_out: [2]V(4 * count) = undefined;
+                            // assert: next line has complete input
+                            compressRowVectorChunks(count, input[0 .. CHUNK_LEN * count], self.t, &self.key, self.flags, &precompressed_out);
+
+                            // TODO: maybe shuffle only 2 times
+                            const m = [4]V(2 * count){
+                                @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ 0, 2, ~@as(i32, 0), ~@as(i32, 2) }, 8, -8)),
+                                @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ 1, 3, ~@as(i32, 1), ~@as(i32, 3) }, 8, -8)),
+                                @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ 4, 6, ~@as(i32, 4), ~@as(i32, 6) }, 8, -8)),
+                                @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ 5, 7, ~@as(i32, 5), ~@as(i32, 7) }, 8, -8)),
+                            };
+
+                            self.compressTwoSubtreesRowVectors(@divExact(count, 2), m, out);
+                            return;
+                        },
+                        else => {},
+                    }
                 }
-            } else {
+
+                var precompressed_out: [8]HalfVec = undefined;
+                if (chunk_count_log == vec_len_log - 1) {
+                    compressCompleteChunksSplitted(
+                        half_vec_len,
+                        input.ptr,
+                        self.t,
+                        1,
+                        &self.half_big_key,
+                        self.flags,
+                        true,
+                        false,
+                        &precompressed_out,
+                    );
+                } else {
+                    // TODO optimize
+
+                    var other_precompressed_out: [8]Vec = undefined;
+
+                    self.compressSplitCompleteSubtrees(input, self.t, true, &other_precompressed_out);
+
+                    var other_other_precompressed_out: [16]HalfVec = undefined;
+
+                    for (0..8) |i| {
+                        for (0..half_vec_len) |j| {
+                            other_other_precompressed_out[i][j] = other_precompressed_out[i][j];
+                            other_other_precompressed_out[8 + i][j] = other_precompressed_out[i][half_vec_len + j];
+                        }
+                    }
+
+                    compress(
+                        half_vec_len,
+                        self.half_big_key,
+                        &other_other_precompressed_out,
+                        splat(half_vec_len, 0),
+                        splat(half_vec_len, 0),
+                        BLOCK_LEN,
+                        self.flags | PARENT,
+                        true,
+                        true,
+                        .{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 },
+                        &precompressed_out,
+                    );
+                }
+
+                const m = [4]Vec{
+                    @shuffle(u32, std.simd.join(precompressed_out[0], precompressed_out[1]), std.simd.join(precompressed_out[2], precompressed_out[3]), repeatShuffleMask(4, @divExact(vec_len, 4), [_]i32{ 0, half_vec_len + 0, ~@as(i32, 0), ~@as(i32, half_vec_len + 0) }, 2, -2)),
+                    @shuffle(u32, std.simd.join(precompressed_out[4], precompressed_out[5]), std.simd.join(precompressed_out[6], precompressed_out[7]), repeatShuffleMask(4, @divExact(vec_len, 4), [_]i32{ 0, half_vec_len + 0, ~@as(i32, 0), ~@as(i32, half_vec_len + 0) }, 2, -2)),
+                    @shuffle(u32, std.simd.join(precompressed_out[0], precompressed_out[1]), std.simd.join(precompressed_out[2], precompressed_out[3]), repeatShuffleMask(4, @divExact(vec_len, 4), [_]i32{ 1, half_vec_len + 1, ~@as(i32, 1), ~@as(i32, half_vec_len + 1) }, 2, -2)),
+                    @shuffle(u32, std.simd.join(precompressed_out[4], precompressed_out[5]), std.simd.join(precompressed_out[6], precompressed_out[7]), repeatShuffleMask(4, @divExact(vec_len, 4), [_]i32{ 1, half_vec_len + 1, ~@as(i32, 1), ~@as(i32, half_vec_len + 1) }, 2, -2)),
+                };
+
+                self.compressTwoSubtreesRowVectors(@divExact(vec_len, 4), m, out);
+            } else if (vec_len == 2) {
+                var precompressed_out: [8]Vec = undefined;
+                self.compressSplitCompleteSubtrees(input, self.t, false, &precompressed_out);
+                for (0..2) |i| {
+                    for (0..8) |j| {
+                        out[8 * i + j] = precompressed_out[j][i];
+                    }
+                }
+            } else if (vec_len == 1) {
                 const half = @divExact(input.len, 2);
                 const half_chunks = @divExact(half, CHUNK_LEN);
                 // TODO: Multithreading
-                self.compressSplitCompleteSubtrees(input[0..half], self.t, out[0..8]);
-                self.compressSplitCompleteSubtrees(input[half..], self.t + half_chunks, out[8..16]);
-            }
+                self.compressSplitCompleteSubtrees(input[0..half], self.t, false, out[0..elements_per_8]);
+                self.compressSplitCompleteSubtrees(input[half..], self.t + half_chunks, false, out[elements_per_8 .. 2 * elements_per_8]);
+            } else comptime unreachable;
         }
 
-        fn compressSplitCompleteSubtrees(self: *const Self, input: []const u8, t: u64, out: *[8]Vec) void {
+        fn compressSplitCompleteSubtrees(self: *const Self, input: []const u8, t: u64, comptime half_half: bool, out: *[8]Vec) void {
             const chunks_per_splitted_subtree = @divExact(input.len, vec_len * CHUNK_LEN);
 
             if (chunks_per_splitted_subtree == 1) {
@@ -648,8 +1120,10 @@ pub fn Blake3(options: Options) type {
                     input.ptr,
                     t,
                     1,
-                    &self.keys[vec_len_log],
+                    &self.big_key,
                     self.flags,
+                    false,
+                    half_half,
                     out,
                 );
             } else {
@@ -658,12 +1132,13 @@ pub fn Blake3(options: Options) type {
                     @divExact(chunks_per_splitted_subtree, 2),
                     t,
                     chunks_per_splitted_subtree,
+                    half_half,
                     out,
                 );
             }
         }
 
-        fn compressSplittedSubtrees(self: *const Self, input: [*]const u8, child_chunks: usize, t: u64, t_inc: usize, out: *[8]Vec) void {
+        fn compressSplittedSubtrees(self: *const Self, input: [*]const u8, child_chunks: usize, t: u64, t_inc: usize, comptime half_half: bool, out: *[8]Vec) void {
             var uncompressed_output: [16]Vec = undefined;
 
             const right_input = input + CHUNK_LEN * child_chunks;
@@ -671,68 +1146,60 @@ pub fn Blake3(options: Options) type {
 
             if (child_chunks == 1) {
                 // TODO: Multithreading
-                compressCompleteChunksSplitted(vec_len, input, t, t_inc, &self.keys[vec_len_log], self.flags, uncompressed_output[0..8]);
-                compressCompleteChunksSplitted(vec_len, right_input, right_t, t_inc, &self.keys[vec_len_log], self.flags, uncompressed_output[8..16]);
+                compressCompleteChunksSplitted(vec_len, input, t, t_inc, &self.big_key, self.flags, false, half_half, uncompressed_output[0..8]);
+                compressCompleteChunksSplitted(vec_len, right_input, right_t, t_inc, &self.big_key, self.flags, false, half_half, uncompressed_output[8..16]);
             } else {
                 const child_child_chunks = @divExact(child_chunks, 2);
                 // TODO: Multithreading
-                self.compressSplittedSubtrees(input, child_child_chunks, t, t_inc, uncompressed_output[0..8]);
-                self.compressSplittedSubtrees(right_input, child_child_chunks, right_t, t_inc, uncompressed_output[8..16]);
+                self.compressSplittedSubtrees(input, child_child_chunks, t, t_inc, half_half, uncompressed_output[0..8]);
+                self.compressSplittedSubtrees(right_input, child_child_chunks, right_t, t_inc, half_half, uncompressed_output[8..16]);
             }
 
             compress(
                 vec_len,
-                self.keys[vec_len_log],
+                self.big_key,
                 &uncompressed_output,
                 splat(vec_len, 0),
                 splat(vec_len, 0),
                 BLOCK_LEN,
                 self.flags | PARENT,
                 true,
+                false,
                 .{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 },
                 out,
             );
         }
 
-        fn compressTwoSubtreesRecursive(
+        fn compressTwoSubtreesRowVectors(
             self: *const Self,
             comptime count: comptime_int,
-            m: [8]V(count),
-            out: *[16]u32,
+            m: [4]V(4 * count),
+            out: *[4]V(4),
         ) void {
-            comptime std.debug.assert(count > 1);
-            if (count == 2) {
-                for (0..2) |i| {
-                    for (0..8) |j| {
-                        out[8 * i + j] = m[j][i];
-                    }
-                }
+            comptime std.debug.assert(count != 0);
+            if (count == 1) {
+                out.* = m;
             } else {
-                const new_count = @divExact(count, 2);
-
-                var new_m: [8]V(new_count) = undefined;
-                compress(
-                    new_count,
-                    self.keys[@ctz(@as(usize, new_count))],
-                    &.{
-                        std.simd.extract(m[0], 0, new_count), std.simd.extract(m[0], new_count, new_count),
-                        std.simd.extract(m[1], 0, new_count), std.simd.extract(m[1], new_count, new_count),
-                        std.simd.extract(m[2], 0, new_count), std.simd.extract(m[2], new_count, new_count),
-                        std.simd.extract(m[3], 0, new_count), std.simd.extract(m[3], new_count, new_count),
-                        std.simd.extract(m[4], 0, new_count), std.simd.extract(m[4], new_count, new_count),
-                        std.simd.extract(m[5], 0, new_count), std.simd.extract(m[5], new_count, new_count),
-                        std.simd.extract(m[6], 0, new_count), std.simd.extract(m[6], new_count, new_count),
-                        std.simd.extract(m[7], 0, new_count), std.simd.extract(m[7], new_count, new_count),
-                    },
-                    splat(new_count, 0),
-                    splat(new_count, 0),
-                    BLOCK_LEN,
-                    self.flags | PARENT,
+                var precompressed_out: [2]V(4 * count) = undefined;
+                compressRowVectors(
+                    count,
+                    std.simd.repeat(4 * count, self.key[0]),
+                    std.simd.repeat(4 * count, self.key[1]),
+                    m,
+                    std.simd.repeat(4 * count, V(4){ 0, 0, BLOCK_LEN, self.flags | PARENT }),
                     true,
-                    .{ 0, 2, 4, 6, 8, 10, 12, 14, 1, 3, 5, 7, 9, 11, 13, 15 },
-                    &new_m,
+                    &precompressed_out,
                 );
-                self.compressTwoSubtreesRecursive(new_count, new_m, out);
+
+                // TODO: maybe shuffle only 2 times
+                const new_m = [4]V(2 * count){
+                    @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ 0, 2, ~@as(i32, 0), ~@as(i32, 2) }, 8, -8)),
+                    @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ 1, 3, ~@as(i32, 1), ~@as(i32, 3) }, 8, -8)),
+                    @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ 4, 6, ~@as(i32, 4), ~@as(i32, 6) }, 8, -8)),
+                    @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ 5, 7, ~@as(i32, 5), ~@as(i32, 7) }, 8, -8)),
+                };
+
+                self.compressTwoSubtreesRowVectors(@divExact(count, 2), new_m, out);
             }
         }
     };
