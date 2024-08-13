@@ -162,7 +162,7 @@ inline fn compress(
 }
 
 pub const Options = struct {
-    /// Max amount of u32 in one vector, or 1 for no vectors
+    /// Max amount of u32 in one simd vector, or 1 to not use simd
     vector_length: comptime_int = std.simd.suggestVectorLength(u32) orelse 1,
 };
 
@@ -1027,4 +1027,15 @@ test "blake3 matrix" {
             }
         }
     }
+}
+
+test "fuzz" {
+    const in = std.testing.fuzzInput(.{});
+    var hash_0: [131]u8 = undefined;
+    std.crypto.hash.Blake3.hash(in, &hash_0, .{});
+
+    var hash_1: [131]u8 = undefined;
+    Blake3(.{}).hash(in, &hash_1);
+
+    try std.testing.expectEqualSlices(u8, &hash_0, &hash_1);
 }
