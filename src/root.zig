@@ -318,15 +318,15 @@ fn compressRowVectorChunks(
     }
 }
 
-pub const Options = struct {
+pub const ComptimeOptions = struct {
     /// Max amount of u32 in one simd vector, or 1 to not use simd
     vector_length: comptime_int = std.simd.suggestVectorLength(u32) orelse 1,
 };
 
-pub fn Blake3(options: Options) type {
-    std.debug.assert(std.math.isPowerOfTwo(options.vector_length));
+pub fn Blake3(comptime_options: ComptimeOptions) type {
+    std.debug.assert(std.math.isPowerOfTwo(comptime_options.vector_length));
 
-    const vec_len = options.vector_length;
+    const vec_len = comptime_options.vector_length;
     const vec_len_log = @ctz(@as(usize, vec_len));
     const Vec = V(vec_len);
 
@@ -343,6 +343,15 @@ pub fn Blake3(options: Options) type {
 
     return struct {
         const Self = @This();
+
+        const Options = struct {
+            mode: union(enum) {
+                hash,
+                keyed_hash: [32]u8,
+                derive_key: []const u8,
+                derive_key_using_context_hash: [32]u8,
+            } = .hash,
+        };
 
         key: [elements_per_8]Element,
         t: u64 = 0,
@@ -380,43 +389,73 @@ pub fn Blake3(options: Options) type {
             };
         }
 
-        pub fn init() Self {
-            return initInternal(IV_CONSTANTS, 0);
+        pub fn init(options: Options) Self {
+            return initInternal(
+                switch (options.mode) {
+                    .hash => IV_CONSTANTS,
+                    .keyed_hash, .derive_key_using_context_hash => |key| blk: {
+                        var key_words: [8]u32 = undefined;
+                        for (0..8) |i| {
+                            key_words[i] = std.mem.readInt(u32, key[4 * i ..][0..4], .little);
+                        }
+                        break :blk key_words;
+                    },
+                    .derive_key => |ctx| blk: {
+                        var ctx_hash: [32]u8 = undefined;
+                        hashKeyContext(ctx, &ctx_hash);
+
+                        var key_words: [8]u32 = undefined;
+                        for (0..8) |i| {
+                            key_words[i] = std.mem.readInt(u32, ctx_hash[4 * i ..][0..4], .little);
+                        }
+                        break :blk key_words;
+                    },
+                },
+                switch (options.mode) {
+                    .hash => 0,
+                    .keyed_hash => KEYED_HASH,
+                    .derive_key, .derive_key_using_context_hash => DERIVE_KEY_MATERIAL,
+                },
+            );
         }
 
-        pub fn initKeyed(key: [32]u8) Self {
-            var key_words: [8]u32 = undefined;
-            for (0..8) |i| {
-                key_words[i] = std.mem.readInt(u32, key[4 * i ..][0..4], .little);
-            }
-            return initInternal(key_words, KEYED_HASH);
-        }
+        // pub fn init() Self {
+        //     return initInternal(IV_CONSTANTS, 0);
+        // }
+        //
+        // pub fn initKeyed(key: [32]u8) Self {
+        //     var key_words: [8]u32 = undefined;
+        //     for (0..8) |i| {
+        //         key_words[i] = std.mem.readInt(u32, key[4 * i ..][0..4], .little);
+        //     }
+        //     return initInternal(key_words, KEYED_HASH);
+        // }
+        //
+        // pub fn initDeriveKey(context: []const u8) Self {
+        //     var context_hash: [32]u8 = undefined;
+        //     hashKeyContext(context, &context_hash);
+        //     return initDeriveKeyFromContextHash(&context_hash);
+        // }
+        //
+        // pub fn initDeriveKeyFromContextHash(context: [32]u8) Self {
+        //     var key_words: [8]u32 = undefined;
+        //     for (0..8) |i| {
+        //         key_words[i] = std.mem.readInt(u32, context[4 * i ..][0..4], .little);
+        //     }
+        //     return initInternal(key_words, DERIVE_KEY_MATERIAL);
+        // }
 
-        pub fn initDeriveKey(context: []const u8) Self {
-            var context_hash: [32]u8 = undefined;
-            hashKeyContext(context, &context_hash);
-            return initDeriveKeyFromContextHash(&context_hash);
-        }
-
-        pub fn initDeriveKeyFromContextHash(context: [32]u8) Self {
-            var key_words: [8]u32 = undefined;
-            for (0..8) |i| {
-                key_words[i] = std.mem.readInt(u32, context[4 * i ..][0..4], .little);
-            }
-            return initInternal(key_words, DERIVE_KEY_MATERIAL);
-        }
-
-        pub fn hash(input: []const u8, out: []u8) void {
-            var blake3 = Self.init();
+        pub fn hash(input: []const u8, out: []u8, options: Options) void {
+            var blake3 = init(options);
             blake3.update(input);
             blake3.final(out);
         }
 
-        pub fn keyedHash(key: [32]u8, input: []const u8, out: []u8) void {
-            var blake3 = Self.initKeyed(key);
-            blake3.update(input);
-            blake3.final(out);
-        }
+        // pub fn keyedHash(key: [32]u8, input: []const u8, out: []u8) void {
+        //     var blake3 = Self.initKeyed(key);
+        //     blake3.update(input);
+        //     blake3.final(out);
+        // }
 
         pub fn hashKeyContext(context: []const u8, out: *[32]u8) void {
             var blake3 = initInternal(IV_CONSTANTS, DERIVE_KEY_CONTEXT);
@@ -424,17 +463,17 @@ pub fn Blake3(options: Options) type {
             blake3.final(out);
         }
 
-        pub fn deriveKeyFromContextHash(context: [32]u8, key_material: []const u8, out: []u8) void {
-            var blake3 = initDeriveKeyFromContextHash(context);
-            blake3.update(key_material);
-            blake3.final(out);
-        }
-
-        pub fn deriveKey(context: []const u8, key_material: []const u8, out: []u8) void {
-            var context_hash: [32]u8 = undefined;
-            hashKeyContext(context, &context_hash);
-            deriveKeyFromContextHash(&context_hash, key_material, out);
-        }
+        // pub fn deriveKeyFromContextHash(context: [32]u8, key_material: []const u8, out: []u8) void {
+        //     var blake3 = initDeriveKeyFromContextHash(context);
+        //     blake3.update(key_material);
+        //     blake3.final(out);
+        // }
+        //
+        // pub fn deriveKey(context: []const u8, key_material: []const u8, out: []u8) void {
+        //     var context_hash: [32]u8 = undefined;
+        //     hashKeyContext(context, &context_hash);
+        //     deriveKeyFromContextHash(&context_hash, key_material, out);
+        // }
 
         fn blocksToValueVectors(comptime count: comptime_int, input: [*]const u8, t_inc: usize, comptime half_half: bool, out: *[16]V(count)) void {
             comptime var vecs_per_row = @divExact(16, @min(count, 16));
@@ -1202,6 +1241,18 @@ pub fn Blake3(options: Options) type {
                 self.compressTwoSubtreesRowVectors(@divExact(count, 2), new_m, out);
             }
         }
+
+        pub const Error = error{};
+        pub const Writer = std.io.Writer(*Self, Error, write);
+
+        fn write(self: *Self, bytes: []const u8) Error!usize {
+            self.update(bytes);
+            return bytes.len;
+        }
+
+        pub fn writer(self: *Self) Writer {
+            return .{ .context = self };
+        }
     };
 }
 
@@ -1462,9 +1513,9 @@ test "blake3 matrix" {
 
         for (exprected) |exp| {
             for (partitions) |partition| {
-                var b3 = B3.init();
-                var b3_keyed = B3.initKeyed(key);
-                var b3_derive_key = B3.initDeriveKeyFromContextHash(context);
+                var b3 = B3.init(.{});
+                var b3_keyed = B3.init(.{ .mode = .{ .keyed_hash = key } });
+                var b3_derive_key = B3.init(.{ .mode = .{ .derive_key_using_context_hash = context } });
 
                 const part_bit_len = exp.input_len / partition[partition.len - 1];
 
@@ -1502,7 +1553,7 @@ test "fuzz" {
     std.crypto.hash.Blake3.hash(in, &hash_0, .{});
 
     var hash_1: [131]u8 = undefined;
-    Blake3(.{}).hash(in, &hash_1);
+    Blake3(.{}).hash(in, &hash_1, .{});
 
     try std.testing.expectEqualSlices(u8, &hash_0, &hash_1);
 }
