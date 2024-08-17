@@ -253,7 +253,6 @@ fn compress3(
         // v_4567 = @shuffle(u32, v_5674, undefined, repeatShuffleMask(4, degree, [_]i32{ 3, 0, 1, 2 }, 4, -4));
         // v_89ab = @shuffle(u32, v_ab89, undefined, repeatShuffleMask(4, degree, [_]i32{ 2, 3, 0, 1 }, 4, -4));
         // v_cdef = @shuffle(u32, v_fcde, undefined, repeatShuffleMask(4, degree, [_]i32{ 1, 2, 3, 0 }, 4, -4));
-
         if (comptime i != 6) {
             // permuation
             // 0 1 2 3 4 5 6 7 8 9 a b c d e f
@@ -934,8 +933,8 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                             const m = [4]V(2 * count){
                                 @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ 0, 2, ~@as(i32, 0), ~@as(i32, 2) }, 8, -8)),
                                 @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ 1, 3, ~@as(i32, 1), ~@as(i32, 3) }, 8, -8)),
-                                @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ 4, 6, ~@as(i32, 4), ~@as(i32, 6) }, 8, -8)),
-                                @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ 5, 7, ~@as(i32, 5), ~@as(i32, 7) }, 8, -8)),
+                                @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ ~@as(i32, 6), 4, 6, ~@as(i32, 4) }, 8, -8)),
+                                @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ ~@as(i32, 7), 5, 7, ~@as(i32, 5) }, 8, -8)),
                             };
 
                             self.compressTwoSubtreesRowVectors(@divExact(count, 2), m, out);
@@ -991,10 +990,9 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                 const m = [4]Vec{
                     @shuffle(u32, std.simd.join(precompressed_out[0], precompressed_out[1]), std.simd.join(precompressed_out[2], precompressed_out[3]), repeatShuffleMask(4, @divExact(vec_len, 4), [_]i32{ 0, half_vec_len + 0, ~@as(i32, 0), ~@as(i32, half_vec_len + 0) }, 2, -2)),
                     @shuffle(u32, std.simd.join(precompressed_out[4], precompressed_out[5]), std.simd.join(precompressed_out[6], precompressed_out[7]), repeatShuffleMask(4, @divExact(vec_len, 4), [_]i32{ 0, half_vec_len + 0, ~@as(i32, 0), ~@as(i32, half_vec_len + 0) }, 2, -2)),
-                    @shuffle(u32, std.simd.join(precompressed_out[0], precompressed_out[1]), std.simd.join(precompressed_out[2], precompressed_out[3]), repeatShuffleMask(4, @divExact(vec_len, 4), [_]i32{ 1, half_vec_len + 1, ~@as(i32, 1), ~@as(i32, half_vec_len + 1) }, 2, -2)),
-                    @shuffle(u32, std.simd.join(precompressed_out[4], precompressed_out[5]), std.simd.join(precompressed_out[6], precompressed_out[7]), repeatShuffleMask(4, @divExact(vec_len, 4), [_]i32{ 1, half_vec_len + 1, ~@as(i32, 1), ~@as(i32, half_vec_len + 1) }, 2, -2)),
+                    @shuffle(u32, std.simd.join(precompressed_out[0], precompressed_out[1]), std.simd.join(precompressed_out[2], precompressed_out[3]), repeatShuffleMask(4, @divExact(vec_len, 4), [_]i32{ ~@as(i32, half_vec_len + 1), 1, half_vec_len + 1, ~@as(i32, 1) }, 2, -2)),
+                    @shuffle(u32, std.simd.join(precompressed_out[4], precompressed_out[5]), std.simd.join(precompressed_out[6], precompressed_out[7]), repeatShuffleMask(4, @divExact(vec_len, 4), [_]i32{ ~@as(i32, half_vec_len + 1), 1, half_vec_len + 1, ~@as(i32, 1) }, 2, -2)),
                 };
-
                 self.compressTwoSubtreesRowVectors(@divExact(vec_len, 4), m, out);
             } else if (vec_len == 2) {
                 var precompressed_out: [8]Vec = undefined;
@@ -1079,21 +1077,20 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
         ) void {
             comptime std.debug.assert(count != 0);
             if (count == 1) {
-                out.* = m;
-            } else {
-                var precompressed_out: [2]V(4 * count) = undefined;
-                const mn = [4]V(4 * count){
+                out.* = .{
                     m[0],
                     m[1],
-                    @shuffle(u32, m[2], undefined, repeatShuffleMask(4, count, [_]i32{ 3, 0, 1, 2 }, 4, -4)),
-                    @shuffle(u32, m[3], undefined, repeatShuffleMask(4, count, [_]i32{ 3, 0, 1, 2 }, 4, -4)),
+                    @shuffle(u32, m[2], undefined, repeatShuffleMask(4, count, [_]i32{ 1, 2, 3, 0 }, 4, -4)),
+                    @shuffle(u32, m[3], undefined, repeatShuffleMask(4, count, [_]i32{ 1, 2, 3, 0 }, 4, -4)),
                 };
+            } else {
+                var precompressed_out: [2]V(4 * count) = undefined;
 
                 compress3(
                     count,
                     std.simd.repeat(4 * count, self.key[0]),
                     std.simd.repeat(4 * count, self.key[1]),
-                    mn,
+                    m,
                     std.simd.repeat(4 * count, V(4){ 0, 0, BLOCK_LEN, self.flags | PARENT }),
                     true,
                     &precompressed_out,
@@ -1103,8 +1100,8 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                 const new_m = [4]V(2 * count){
                     @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ 0, 2, ~@as(i32, 0), ~@as(i32, 2) }, 8, -8)),
                     @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ 1, 3, ~@as(i32, 1), ~@as(i32, 3) }, 8, -8)),
-                    @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ 4, 6, ~@as(i32, 4), ~@as(i32, 6) }, 8, -8)),
-                    @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ 5, 7, ~@as(i32, 5), ~@as(i32, 7) }, 8, -8)),
+                    @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ ~@as(i32, 6), 4, 6, ~@as(i32, 4) }, 8, -8)),
+                    @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ ~@as(i32, 7), 5, 7, ~@as(i32, 5) }, 8, -8)),
                 };
 
                 self.compressTwoSubtreesRowVectors(@divExact(count, 2), new_m, out);
