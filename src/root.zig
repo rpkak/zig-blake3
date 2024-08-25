@@ -3,7 +3,7 @@ const builtin = @import("builtin");
 
 // In this file, some function names end with 2 or 3.
 // The postfix 2 indicates that this function uses SIMD as described in the second approach described in the BLAKE3 specification, section 5.3.
-// The postfix 3 indicates that this function uses SIMD as described in the third approach described in the BLAKE3 specification, section 5.3
+// The postfix 3 indicates that this function uses SIMD as described in the third approach (or first approach) described in the BLAKE3 specification, section 5.3
 
 const CHUNK_START: u8 = 1 << 0;
 const CHUNK_END: u8 = 1 << 1;
@@ -182,35 +182,35 @@ fn compress3(
     comptime degree: comptime_int,
     h_0123: V(4 * degree),
     h_4567: V(4 * degree),
-    /// fdf
+    /// The order of m is 0246 1357 e8ac f9bd (hex)
     m: [4]V(4 * degree),
     tbd: V(4 * degree),
     comptime truncated: bool,
     out: *[if (truncated) 2 else 4]V(4 * degree),
 ) void {
     @setEvalBranchQuota(1196);
-    const RowVec = V(4 * degree);
+    const Vec = V(4 * degree);
 
-    var v_0123: RowVec = h_0123;
-    var v_4567: RowVec = h_4567;
-    var v_89ab: RowVec = std.simd.repeat(4 * degree, IV_CONSTANTS[0..4].*);
-    var v_cdef: RowVec = tbd;
+    var v_0123: Vec = h_0123;
+    var v_4567: Vec = h_4567;
+    var v_89ab: Vec = std.simd.repeat(4 * degree, IV_CONSTANTS[0..4].*);
+    var v_cdef: Vec = tbd;
 
-    var m_0246: RowVec = m[0];
-    var m_1357: RowVec = m[1];
-    var m_e8ac: RowVec = m[2];
-    var m_f9bd: RowVec = m[3];
+    var m_0246: Vec = m[0];
+    var m_1357: Vec = m[1];
+    var m_e8ac: Vec = m[2];
+    var m_f9bd: Vec = m[3];
 
     inline for (0..7) |i| {
         // g
         v_0123 +%= v_4567 +% m_0246;
-        v_cdef = std.math.rotr(RowVec, v_cdef ^ v_0123, 16);
+        v_cdef = std.math.rotr(Vec, v_cdef ^ v_0123, 16);
         v_89ab +%= v_cdef;
-        v_4567 = std.math.rotr(RowVec, v_4567 ^ v_89ab, 12);
+        v_4567 = std.math.rotr(Vec, v_4567 ^ v_89ab, 12);
         v_0123 +%= v_4567 +% m_1357;
-        v_cdef = std.math.rotr(RowVec, v_cdef ^ v_0123, 8);
+        v_cdef = std.math.rotr(Vec, v_cdef ^ v_0123, 8);
         v_89ab +%= v_cdef;
-        v_4567 = std.math.rotr(RowVec, v_4567 ^ v_89ab, 7);
+        v_4567 = std.math.rotr(Vec, v_4567 ^ v_89ab, 7);
 
         // diagonalization
         var v_3012 = @shuffle(u32, v_0123, undefined, repeatShuffleMask(4, degree, [_]i32{ 3, 0, 1, 2 }, 4, -4));
@@ -219,13 +219,13 @@ fn compress3(
 
         // g
         v_3012 +%= v_4567 +% m_e8ac;
-        v_efcd = std.math.rotr(RowVec, v_efcd ^ v_3012, 16);
+        v_efcd = std.math.rotr(Vec, v_efcd ^ v_3012, 16);
         v_9ab8 +%= v_efcd;
-        v_4567 = std.math.rotr(RowVec, v_4567 ^ v_9ab8, 12);
+        v_4567 = std.math.rotr(Vec, v_4567 ^ v_9ab8, 12);
         v_3012 +%= v_4567 +% m_f9bd;
-        v_efcd = std.math.rotr(RowVec, v_efcd ^ v_3012, 8);
+        v_efcd = std.math.rotr(Vec, v_efcd ^ v_3012, 8);
         v_9ab8 +%= v_efcd;
-        v_4567 = std.math.rotr(RowVec, v_4567 ^ v_9ab8, 7);
+        v_4567 = std.math.rotr(Vec, v_4567 ^ v_9ab8, 7);
 
         // undiagonalization
         v_0123 = @shuffle(u32, v_3012, undefined, repeatShuffleMask(4, degree, [_]i32{ 1, 2, 3, 0 }, 4, -4));
@@ -270,21 +270,18 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
     const vec_len_log = @ctz(@as(usize, vec_len));
     const Vec = V(vec_len);
 
-    const row_vector_support = vec_len_log >= 2;
+    const third_approach = vec_len_log >= 2;
 
-    const half_vec_len = if (row_vector_support) 1 << (vec_len_log - 1) else {};
-    const HalfVec = if (row_vector_support) V(half_vec_len) else {};
+    const half_vec_len = if (third_approach) 1 << (vec_len_log - 1) else {};
+    const HalfVec = if (third_approach) V(half_vec_len) else {};
 
-    // const HalfCompressionM = if (row_vector_support) [2]V(4) else [8]u32;
-    // const SingleCompressionM = if (row_vector_support) [4]V(4) else [16]u32;
-
-    const Element = if (row_vector_support) V(4) else u32;
-    const elements_per_8 = if (row_vector_support) 2 else 8;
+    const Element = if (third_approach) V(4) else u32;
+    const elements_per_8 = if (third_approach) 2 else 8;
 
     return struct {
         const Self = @This();
 
-        const Options = struct {
+        pub const Options = struct {
             mode: union(enum) {
                 hash,
                 keyed_hash: [32]u8,
@@ -298,7 +295,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
         flags: u32,
 
         big_key: [8]Vec,
-        half_big_key: if (row_vector_support) [8]HalfVec else void,
+        half_big_key: if (third_approach) [8]HalfVec else void,
 
         chunk_state_len: u32 = 0,
         chunk_state_chaining_value: [elements_per_8]Element,
@@ -309,14 +306,14 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
 
         fn initInternal(key: [8]u32, flags: u32) Self {
             var big_key: [8]Vec = undefined;
-            var half_big_key: if (row_vector_support) [8]HalfVec else void = undefined;
+            var half_big_key: if (third_approach) [8]HalfVec else void = undefined;
             for (0..8) |i| {
                 big_key[i] = splat(vec_len, key[i]);
-                if (row_vector_support) {
+                if (third_approach) {
                     half_big_key[i] = splat(half_vec_len, key[i]);
                 }
             }
-            const small_key = if (row_vector_support)
+            const small_key = if (third_approach)
                 [2]V(4){ key[0..4].*, key[4..8].* }
             else
                 key;
@@ -606,7 +603,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
             const stack_len_target = @popCount(chunk_counter);
             while (self.cv_stack_len != stack_len_target) : (self.cv_stack_len -= 1) {
                 const m: [2 * elements_per_8]Element = self.cv_stack[elements_per_8 * (self.cv_stack_len - 2) ..][0 .. 2 * elements_per_8].*;
-                if (row_vector_support) {
+                if (third_approach) {
                     var out: [2]V(4) = undefined;
                     compress3(
                         1,
@@ -654,9 +651,9 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                 0;
         }
 
-        fn compressChunkStateBlock(self: *Self, input: *const [BLOCK_LEN]u8, output: *[elements_per_8]Element) void {
+        fn compressChunkStateBlock(self: *const Self, input: *const [BLOCK_LEN]u8, output: *[elements_per_8]Element) void {
             std.debug.assert(self.chunk_state_len & BLOCK_LEN_MASK == 0);
-            if (row_vector_support) {
+            if (third_approach) {
                 var m: [4]V(4) = undefined;
                 blocksToVectors3(1, input, undefined, &m);
                 compress3(
@@ -724,7 +721,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                 input = input[take..];
                 if (input.len != 0) {
                     var cv: [elements_per_8]Element = undefined;
-                    if (row_vector_support) {
+                    if (third_approach) {
                         var out: [2]V(4) = undefined;
                         self.compressChunkStateBlock(&self.input_buffer, &out);
                         if (self.t & 1 == 0) {
@@ -757,15 +754,15 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                 if (subtree_chunks_log == 0) {
                     var out: [elements_per_8]Element = undefined;
 
-                    if (row_vector_support) {
-                        var precompressed_out: [2]V(4) = undefined;
-                        compressRowVectorChunks(1, input[0..CHUNK_LEN], self.t, &self.key, self.flags, &precompressed_out);
+                    if (third_approach) {
+                        var compress3_output: [2]V(4) = undefined;
+                        compressChunks3(1, input[0..CHUNK_LEN], self.t, &self.key, self.flags, &compress3_output);
                         if (self.t & 1 == 0) {
-                            out[0] = @shuffle(u32, precompressed_out[0], precompressed_out[1], [_]i32{ 0, 2, ~@as(i32, 0), ~@as(i32, 2) });
-                            out[1] = @shuffle(u32, precompressed_out[0], precompressed_out[1], [_]i32{ 1, 3, ~@as(i32, 1), ~@as(i32, 3) });
+                            out[0] = @shuffle(u32, compress3_output[0], compress3_output[1], [_]i32{ 0, 2, ~@as(i32, 0), ~@as(i32, 2) });
+                            out[1] = @shuffle(u32, compress3_output[0], compress3_output[1], [_]i32{ 1, 3, ~@as(i32, 1), ~@as(i32, 3) });
                         } else {
-                            out[0] = @shuffle(u32, precompressed_out[0], precompressed_out[1], [_]i32{ ~@as(i32, 2), 0, 2, ~@as(i32, 0) });
-                            out[1] = @shuffle(u32, precompressed_out[0], precompressed_out[1], [_]i32{ ~@as(i32, 3), 1, 3, ~@as(i32, 1) });
+                            out[0] = @shuffle(u32, compress3_output[0], compress3_output[1], [_]i32{ ~@as(i32, 2), 0, 2, ~@as(i32, 0) });
+                            out[1] = @shuffle(u32, compress3_output[0], compress3_output[1], [_]i32{ ~@as(i32, 3), 1, 3, ~@as(i32, 1) });
                         }
                     } else {
                         compressChunks2(1, input.ptr, self.t, undefined, &self.key, self.flags, false, false, &out);
@@ -797,7 +794,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
             var t: u64 = undefined;
             if (self.chunk_state_len != 0 or self.cv_stack_len == 0) {
                 h.* = self.chunk_state_chaining_value;
-                if (row_vector_support) {
+                if (third_approach) {
                     blocksToVectors3(1, &self.input_buffer, undefined, m);
                 } else {
                     blocksToVectors2(1, &self.input_buffer, undefined, false, m);
@@ -815,8 +812,8 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
             }
 
             while (cvs_remaining != 0) : (cvs_remaining -= 1) {
-                if (row_vector_support) {
-                    var precompressed_out: [2]V(4) = undefined;
+                if (third_approach) {
+                    var compress3_output: [2]V(4) = undefined;
                     compress3(
                         1,
                         h[0],
@@ -824,11 +821,11 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                         m.*,
                         .{ @truncate(t >> 0), @truncate(t >> 32), b.*, d.* },
                         true,
-                        &precompressed_out,
+                        &compress3_output,
                     );
 
-                    m[2] = @shuffle(u32, precompressed_out[0], precompressed_out[1], [_]i32{ ~@as(i32, 2), 0, 2, ~@as(i32, 0) });
-                    m[3] = @shuffle(u32, precompressed_out[0], precompressed_out[1], [_]i32{ ~@as(i32, 3), 1, 3, ~@as(i32, 1) });
+                    m[2] = @shuffle(u32, compress3_output[0], compress3_output[1], [_]i32{ ~@as(i32, 2), 0, 2, ~@as(i32, 0) });
+                    m[3] = @shuffle(u32, compress3_output[0], compress3_output[1], [_]i32{ ~@as(i32, 3), 1, 3, ~@as(i32, 1) });
                 } else {
                     compress2(
                         1,
@@ -866,7 +863,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
 
             while (output.len != 0) : (t += 1) {
                 var uncopied_out: [64]u8 = undefined;
-                if (row_vector_support) {
+                if (third_approach) {
                     var lil_endian_out: [4]V(4) = undefined;
                     compress3(
                         1,
@@ -910,7 +907,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
 
         fn compressTwoSubtrees(self: *const Self, input: []const u8, out: *[2 * elements_per_8]Element) void {
             @setEvalBranchQuota(20000);
-            if (row_vector_support) {
+            if (third_approach) {
                 const chunk_count_log = @ctz(input.len) - CHUNK_LEN_LOG;
 
                 if (vec_len_log > 2) {
@@ -918,24 +915,24 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                         0 => unreachable,
                         inline 1...vec_len_log - 2 => |count_log| {
                             const count = 1 << count_log;
-                            var precompressed_out: [2]V(4 * count) = undefined;
-                            compressRowVectorChunks(count, input[0 .. CHUNK_LEN * count], self.t, &self.key, self.flags, &precompressed_out);
+                            var compress3_output: [2]V(4 * count) = undefined;
+                            compressChunks3(count, input[0 .. CHUNK_LEN * count], self.t, &self.key, self.flags, &compress3_output);
 
                             const m = [4]V(2 * count){
-                                @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ 0, 2, ~@as(i32, 0), ~@as(i32, 2) }, 8, -8)),
-                                @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ 1, 3, ~@as(i32, 1), ~@as(i32, 3) }, 8, -8)),
-                                @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ ~@as(i32, 6), 4, 6, ~@as(i32, 4) }, 8, -8)),
-                                @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ ~@as(i32, 7), 5, 7, ~@as(i32, 5) }, 8, -8)),
+                                @shuffle(u32, compress3_output[0], compress3_output[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ 0, 2, ~@as(i32, 0), ~@as(i32, 2) }, 8, -8)),
+                                @shuffle(u32, compress3_output[0], compress3_output[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ 1, 3, ~@as(i32, 1), ~@as(i32, 3) }, 8, -8)),
+                                @shuffle(u32, compress3_output[0], compress3_output[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ ~@as(i32, 6), 4, 6, ~@as(i32, 4) }, 8, -8)),
+                                @shuffle(u32, compress3_output[0], compress3_output[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ ~@as(i32, 7), 5, 7, ~@as(i32, 5) }, 8, -8)),
                             };
 
-                            self.compressTwoSubtreesRowVectors(@divExact(count, 2), m, out);
+                            self.compressParentsRecursive3(@divExact(count, 2), m, out);
                             return;
                         },
                         else => {},
                     }
                 }
 
-                var precompressed_out: [8]HalfVec = undefined;
+                var compress2_output: [8]HalfVec = undefined;
                 if (chunk_count_log == vec_len_log - 1) {
                     compressChunks2(
                         half_vec_len,
@@ -946,63 +943,59 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                         self.flags,
                         true,
                         false,
-                        &precompressed_out,
+                        &compress2_output,
                     );
                 } else {
-                    // TODO: optimize
+                    var first_compress2_output: [8]Vec = undefined;
 
-                    var other_precompressed_out: [8]Vec = undefined;
+                    self.compressSubtrees2(input, self.t, true, &first_compress2_output);
 
-                    self.compressSplitCompleteSubtrees(input, self.t, true, &other_precompressed_out);
-
-                    var other_other_precompressed_out: [16]HalfVec = undefined;
+                    var m: [16]HalfVec = undefined;
 
                     for (0..8) |i| {
-                        for (0..half_vec_len) |j| {
-                            other_other_precompressed_out[i][j] = other_precompressed_out[i][j];
-                            other_other_precompressed_out[8 + i][j] = other_precompressed_out[i][half_vec_len + j];
-                        }
+                        m[i] = std.simd.extract(first_compress2_output[i], 0, half_vec_len);
+                        m[8 + i] = std.simd.extract(first_compress2_output[i], half_vec_len, half_vec_len);
                     }
 
                     compress2(
                         half_vec_len,
                         self.half_big_key,
-                        &other_other_precompressed_out,
+                        &m,
                         splat(half_vec_len, 0),
                         splat(half_vec_len, 0),
                         BLOCK_LEN,
                         self.flags | PARENT,
                         true,
                         true,
-                        &precompressed_out,
+                        &compress2_output,
                     );
                 }
 
                 const m = [4]Vec{
-                    @shuffle(u32, std.simd.join(precompressed_out[0], precompressed_out[1]), std.simd.join(precompressed_out[2], precompressed_out[3]), repeatShuffleMask(4, @divExact(vec_len, 4), [_]i32{ 0, half_vec_len + 0, ~@as(i32, 0), ~@as(i32, half_vec_len + 0) }, 2, -2)),
-                    @shuffle(u32, std.simd.join(precompressed_out[4], precompressed_out[5]), std.simd.join(precompressed_out[6], precompressed_out[7]), repeatShuffleMask(4, @divExact(vec_len, 4), [_]i32{ 0, half_vec_len + 0, ~@as(i32, 0), ~@as(i32, half_vec_len + 0) }, 2, -2)),
-                    @shuffle(u32, std.simd.join(precompressed_out[0], precompressed_out[1]), std.simd.join(precompressed_out[2], precompressed_out[3]), repeatShuffleMask(4, @divExact(vec_len, 4), [_]i32{ ~@as(i32, half_vec_len + 1), 1, half_vec_len + 1, ~@as(i32, 1) }, 2, -2)),
-                    @shuffle(u32, std.simd.join(precompressed_out[4], precompressed_out[5]), std.simd.join(precompressed_out[6], precompressed_out[7]), repeatShuffleMask(4, @divExact(vec_len, 4), [_]i32{ ~@as(i32, half_vec_len + 1), 1, half_vec_len + 1, ~@as(i32, 1) }, 2, -2)),
+                    @shuffle(u32, std.simd.join(compress2_output[0], compress2_output[1]), std.simd.join(compress2_output[2], compress2_output[3]), repeatShuffleMask(4, @divExact(vec_len, 4), [_]i32{ 0, half_vec_len + 0, ~@as(i32, 0), ~@as(i32, half_vec_len + 0) }, 2, -2)),
+                    @shuffle(u32, std.simd.join(compress2_output[4], compress2_output[5]), std.simd.join(compress2_output[6], compress2_output[7]), repeatShuffleMask(4, @divExact(vec_len, 4), [_]i32{ 0, half_vec_len + 0, ~@as(i32, 0), ~@as(i32, half_vec_len + 0) }, 2, -2)),
+                    @shuffle(u32, std.simd.join(compress2_output[0], compress2_output[1]), std.simd.join(compress2_output[2], compress2_output[3]), repeatShuffleMask(4, @divExact(vec_len, 4), [_]i32{ ~@as(i32, half_vec_len + 1), 1, half_vec_len + 1, ~@as(i32, 1) }, 2, -2)),
+                    @shuffle(u32, std.simd.join(compress2_output[4], compress2_output[5]), std.simd.join(compress2_output[6], compress2_output[7]), repeatShuffleMask(4, @divExact(vec_len, 4), [_]i32{ ~@as(i32, half_vec_len + 1), 1, half_vec_len + 1, ~@as(i32, 1) }, 2, -2)),
                 };
-                self.compressTwoSubtreesRowVectors(@divExact(vec_len, 4), m, out);
+                self.compressParentsRecursive3(@divExact(vec_len, 4), m, out);
             } else if (vec_len == 2) {
-                var precompressed_out: [8]Vec = undefined;
-                self.compressSplitCompleteSubtrees(input, self.t, false, &precompressed_out);
+                var compress2_output: [8]Vec = undefined;
+                self.compressSubtrees2(input, self.t, false, &compress2_output);
                 for (0..2) |i| {
                     for (0..8) |j| {
-                        out[8 * i + j] = precompressed_out[j][i];
+                        out[8 * i + j] = compress2_output[j][i];
                     }
                 }
             } else if (vec_len == 1) {
                 const half = @divExact(input.len, 2);
                 const half_chunks = @divExact(half, CHUNK_LEN);
                 // TODO: Multithreading
-                self.compressSplitCompleteSubtrees(input[0..half], self.t, false, out[0..elements_per_8]);
-                self.compressSplitCompleteSubtrees(input[half..], self.t + half_chunks, false, out[elements_per_8 .. 2 * elements_per_8]);
+                self.compressSubtrees2(input[0..half], self.t, false, out[0..elements_per_8]);
+                self.compressSubtrees2(input[half..], self.t + half_chunks, false, out[elements_per_8 .. 2 * elements_per_8]);
             } else comptime unreachable;
         }
 
-        fn compressSplitCompleteSubtrees(self: *const Self, input: []const u8, t: u64, comptime half_half: bool, out: *[8]Vec) void {
+        fn compressSubtrees2(self: *const Self, input: []const u8, t: u64, comptime half_half: bool, out: *[8]Vec) void {
             const chunks_per_splitted_subtree = @divExact(input.len, vec_len * CHUNK_LEN);
 
             if (chunks_per_splitted_subtree == 1) {
@@ -1018,7 +1011,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                     out,
                 );
             } else {
-                self.compressSplittedSubtrees(
+                self.compressSubtreesRecursive2(
                     input.ptr,
                     @divExact(chunks_per_splitted_subtree, 2),
                     t,
@@ -1029,7 +1022,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
             }
         }
 
-        fn compressSplittedSubtrees(self: *const Self, input: [*]const u8, child_chunks: usize, t: u64, t_inc: usize, comptime half_half: bool, out: *[8]Vec) void {
+        fn compressSubtreesRecursive2(self: *const Self, input: [*]const u8, child_chunks: usize, t: u64, t_inc: usize, comptime half_half: bool, out: *[8]Vec) void {
             var uncompressed_output: [16]Vec = undefined;
 
             const right_input = input + CHUNK_LEN * child_chunks;
@@ -1042,8 +1035,8 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
             } else {
                 const child_child_chunks = @divExact(child_chunks, 2);
                 // TODO: Multithreading
-                self.compressSplittedSubtrees(input, child_child_chunks, t, t_inc, half_half, uncompressed_output[0..8]);
-                self.compressSplittedSubtrees(right_input, child_child_chunks, right_t, t_inc, half_half, uncompressed_output[8..16]);
+                self.compressSubtreesRecursive2(input, child_child_chunks, t, t_inc, half_half, uncompressed_output[0..8]);
+                self.compressSubtreesRecursive2(right_input, child_child_chunks, right_t, t_inc, half_half, uncompressed_output[8..16]);
             }
 
             compress2(
@@ -1060,7 +1053,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
             );
         }
 
-        fn compressRowVectorChunks(
+        fn compressChunks3(
             comptime count: comptime_int,
             input: *const [CHUNK_LEN * count]u8,
             t: u64,
@@ -1101,7 +1094,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
             }
         }
 
-        fn compressTwoSubtreesRowVectors(
+        fn compressParentsRecursive3(
             self: *const Self,
             comptime count: comptime_int,
             m: [4]V(4 * count),
@@ -1111,7 +1104,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
             if (count == 1) {
                 out.* = m;
             } else {
-                var precompressed_out: [2]V(4 * count) = undefined;
+                var compress3_output: [2]V(4 * count) = undefined;
 
                 compress3(
                     count,
@@ -1120,23 +1113,22 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                     m,
                     std.simd.repeat(4 * count, V(4){ 0, 0, BLOCK_LEN, self.flags | PARENT }),
                     true,
-                    &precompressed_out,
+                    &compress3_output,
                 );
 
-                // TODO: maybe shuffle only 2 times
                 const new_m = [4]V(2 * count){
-                    @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ 0, 2, ~@as(i32, 0), ~@as(i32, 2) }, 8, -8)),
-                    @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ 1, 3, ~@as(i32, 1), ~@as(i32, 3) }, 8, -8)),
-                    @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ ~@as(i32, 6), 4, 6, ~@as(i32, 4) }, 8, -8)),
-                    @shuffle(u32, precompressed_out[0], precompressed_out[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ ~@as(i32, 7), 5, 7, ~@as(i32, 5) }, 8, -8)),
+                    @shuffle(u32, compress3_output[0], compress3_output[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ 0, 2, ~@as(i32, 0), ~@as(i32, 2) }, 8, -8)),
+                    @shuffle(u32, compress3_output[0], compress3_output[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ 1, 3, ~@as(i32, 1), ~@as(i32, 3) }, 8, -8)),
+                    @shuffle(u32, compress3_output[0], compress3_output[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ ~@as(i32, 6), 4, 6, ~@as(i32, 4) }, 8, -8)),
+                    @shuffle(u32, compress3_output[0], compress3_output[1], repeatShuffleMask(4, @divExact(count, 2), [_]i32{ ~@as(i32, 7), 5, 7, ~@as(i32, 5) }, 8, -8)),
                 };
 
-                self.compressTwoSubtreesRowVectors(@divExact(count, 2), new_m, out);
+                self.compressParentsRecursive3(@divExact(count, 2), new_m, out);
             }
         }
 
         pub const Error = error{};
-        pub const Writer = std.io.Writer(*Self, Error, write);
+        pub const Writer = std.io.GenericWriter(*Self, Error, write);
 
         fn write(self: *Self, bytes: []const u8) Error!usize {
             self.update(bytes);
@@ -1149,17 +1141,15 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
     };
 }
 
-test "blake3 matrix" {
-    const stringToBytes = struct {
-        fn stringToBytes(str: *const [262]u8) [131]u8 {
-            var bytes: [131]u8 = undefined;
-            for (0..131) |i| {
-                bytes[i] = 0x10 * @mod(str[2 * i] - '0', 39) + 0x01 * @mod(str[2 * i + 1] - '0', 39);
-            }
-            return bytes;
-        }
-    }.stringToBytes;
+fn stringToBytes(str: *const [262]u8) [131]u8 {
+    var bytes: [131]u8 = undefined;
+    for (0..131) |i| {
+        bytes[i] = 0x10 * @mod(str[2 * i] - '0', 39) + 0x01 * @mod(str[2 * i + 1] - '0', 39);
+    }
+    return bytes;
+}
 
+test "blake3 matrix" {
     const exprected = [_]struct {
         input_len: usize,
         hash: [131]u8,
