@@ -11,6 +11,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
+        // exe.root_module.valgrind = true;
         exe.linkLibC();
         b.installArtifact(exe);
 

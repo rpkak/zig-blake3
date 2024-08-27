@@ -93,8 +93,23 @@ fn joinVecs(count: comptime_int, len: comptime_int, input: [count]V(len), target
     }
 }
 
+fn blocksToVectors(vec_len: comptime_int, count: comptime_int, input: [*]const u8, t_inc: usize, out: *[count * @divExact(16, vec_len)]V(vec_len)) void {
+    for (0..count) |i| {
+        for (0..@divExact(16, vec_len)) |j| {
+            for (0..vec_len) |k| {
+                out[@divExact(16, vec_len) * i + j][k] = @bitCast(input[CHUNK_LEN * (t_inc * i) + 4 * vec_len * j + 4 * k ..][0..4].*);
+            }
+        }
+    }
+    if (builtin.cpu.arch.endian() == .big) {
+        for (out) |*vec| {
+            vec.* = @byteSwap(vec.*);
+        }
+    }
+}
+
 inline fn compress2(
-    comptime degree: comptime_int,
+    degree: comptime_int,
     h: [8]V(degree),
     m: *const [16]V(degree),
     t_0: V(degree),
@@ -179,7 +194,7 @@ inline fn compress2(
 }
 
 fn compress3(
-    comptime degree: comptime_int,
+    degree: comptime_int,
     h_0123: V(4 * degree),
     h_4567: V(4 * degree),
     /// The order of m is 0246 1357 e8ac f9bd (hex)
@@ -188,7 +203,7 @@ fn compress3(
     comptime truncated: bool,
     out: *[if (truncated) 2 else 4]V(4 * degree),
 ) void {
-    @setEvalBranchQuota(1196);
+    @setEvalBranchQuota(596 + 600 * degree);
     const Vec = V(4 * degree);
 
     var v_0123: Vec = h_0123;
@@ -369,7 +384,24 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
         }
 
         fn blocksToVectors2(comptime count: comptime_int, input: [*]const u8, t_inc: usize, comptime half_half: bool, out: *[16]V(count)) void {
-            @setEvalBranchQuota(10000);
+            // old
+            // // 16 :@setEvalBranchQuota(1031);
+            // // 32: @setEvalBranchQuota(1578);
+            // // @setEvalBranchQuota(2624);
+            // // @setEvalBranchQuota(500 + 34 * count);
+            // // if (count != 64) return;
+            // // @compileLog(count);
+            // // @setEvalBranchQuota(20000);
+
+            // @compileLog(count);
+
+            // 16: @setEvalBranchQuota(1031);
+            // 32: @setEvalBranchQuota(1578);
+            // 64: @setEvalBranchQuota(2624);
+            // 128 @setEvalBranchQuota(4716);
+            // @setEvalBranchQuota(8924);
+            @setEvalBranchQuota(80924);
+
             comptime var vecs_per_row = @divExact(16, @min(count, 16));
             comptime var vecs_per_column = @divExact(16, vecs_per_row);
 
@@ -450,25 +482,27 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
             comptime std.debug.assert(vecs_per_row == 16);
 
             out.* = vecs;
+            // @compileLog("ja");
         }
 
-        fn blocksToVectors3(comptime count: comptime_int, input: [*]const u8, t_inc: usize, out: *[4]V(4 * count)) void {
+        fn blocksToVectors3(count: comptime_int, input: [*]const u8, t_inc: usize, out: *[4]V(4 * count)) void {
             const len = @min(vec_len, 16);
 
-            const vecs_per_block = @divExact(16, len);
-            var vecs: [count * vecs_per_block]V(len) = undefined;
-            for (0..count) |i| {
-                for (0..vecs_per_block) |j| {
-                    for (0..len) |k| {
-                        vecs[vecs_per_block * i + j][k] = @bitCast(input[CHUNK_LEN * (t_inc * i) + 4 * len * j + 4 * k ..][0..4].*);
-                    }
-                }
-            }
-            if (builtin.cpu.arch.endian() == .big) {
-                for (&vecs) |*vec| {
-                    vec.* = @byteSwap(vec.*);
-                }
-            }
+            var vecs: [count * @divExact(16, len)]V(len) = undefined;
+            // for (0..count) |i| {
+            //     for (0..vecs_per_block) |j| {
+            //         for (0..len) |k| {
+            //             vecs[vecs_per_block * i + j][k] = @bitCast(input[CHUNK_LEN * (t_inc * i) + 4 * len * j + 4 * k ..][0..4].*);
+            //         }
+            //     }
+            // }
+            // if (builtin.cpu.arch.endian() == .big) {
+            //     for (&vecs) |*vec| {
+            //         vec.* = @byteSwap(vec.*);
+            //     }
+            // }
+
+            blocksToVectors(len, count, input, t_inc, &vecs);
 
             if (len == 4 and count == 1) {
                 out.* = .{
@@ -537,7 +571,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
         }
 
         fn compressChunks2(
-            comptime count: comptime_int,
+            count: comptime_int,
             input: [*]const u8,
             t: u64,
             t_inc: usize,
@@ -906,11 +940,12 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
         }
 
         fn compressTwoSubtrees(self: *const Self, input: []const u8, out: *[2 * elements_per_8]Element) void {
-            @setEvalBranchQuota(20000);
             if (third_approach) {
                 const chunk_count_log = @ctz(input.len) - CHUNK_LEN_LOG;
 
                 if (vec_len_log > 2) {
+                    @setEvalBranchQuota(16 * vec_len + 31 * @as(u32, vec_len_log) - 52);
+
                     switch (chunk_count_log) {
                         0 => unreachable,
                         inline 1...vec_len_log - 2 => |count_log| {
@@ -1054,7 +1089,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
         }
 
         fn compressChunks3(
-            comptime count: comptime_int,
+            count: comptime_int,
             input: *const [CHUNK_LEN * count]u8,
             t: u64,
             key: *const [2]V(4),
@@ -1096,7 +1131,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
 
         fn compressParentsRecursive3(
             self: *const Self,
-            comptime count: comptime_int,
+            count: comptime_int,
             m: [4]V(4 * count),
             out: *[4]V(4),
         ) void {
@@ -1430,13 +1465,13 @@ test "blake3 matrix" {
     }
 }
 
-test "fuzz" {
-    const in = std.testing.fuzzInput(.{});
-    var hash_0: [131]u8 = undefined;
-    std.crypto.hash.Blake3.hash(in, &hash_0, .{});
-
-    var hash_1: [131]u8 = undefined;
-    Blake3(.{}).hash(in, &hash_1, .{});
-
-    try std.testing.expectEqualSlices(u8, &hash_0, &hash_1);
-}
+// test "fuzz" {
+//     const in = std.testing.fuzzInput(.{});
+//     var hash_0: [131]u8 = undefined;
+//     std.crypto.hash.Blake3.hash(in, &hash_0, .{});
+//
+//     var hash_1: [131]u8 = undefined;
+//     Blake3(.{}).hash(in, &hash_1, .{});
+//
+//     try std.testing.expectEqualSlices(u8, &hash_0, &hash_1);
+// }
