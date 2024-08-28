@@ -97,7 +97,9 @@ fn blocksToVectors(vec_len: comptime_int, count: comptime_int, input: [*]const u
     for (0..count) |i| {
         for (0..@divExact(16, vec_len)) |j| {
             for (0..vec_len) |k| {
-                out[@divExact(16, vec_len) * i + j][k] = @bitCast(input[CHUNK_LEN * (t_inc * i) + 4 * vec_len * j + 4 * k ..][0..4].*);
+                index(vec_len, &out[@divExact(16, vec_len) * i + j], k).* =
+                    // out[@divExact(16, vec_len) * i + j][k] =
+                    @bitCast(input[CHUNK_LEN * (t_inc * i) + 4 * vec_len * j + 4 * k ..][0..4].*);
             }
         }
     }
@@ -405,29 +407,52 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
             comptime var vecs_per_row = @divExact(16, @min(count, 16));
             comptime var vecs_per_column = @divExact(16, vecs_per_row);
 
-            var vecs: [16]V(count) = undefined;
+            var ordered_vecs: [count * vecs_per_row]V(@min(count, 16)) = undefined;
 
-            for (0..vecs_per_column) |i| {
-                for (0..@divExact(count, vecs_per_column)) |j| {
-                    var t_offset = i * @divExact(count, vecs_per_column) + j;
-                    if (half_half) {
-                        t_offset = 2 * (t_offset % @divExact(count, 2)) + t_offset / @divExact(count, 2);
-                    }
+            blocksToVectors(@min(count, 16), count, input, t_inc, &ordered_vecs);
 
-                    for (0..vecs_per_row) |k| {
-                        for (0..@divExact(16, vecs_per_row)) |l| {
-                            index(count, &vecs[vecs_per_row * i + k], @divExact(count, vecs_per_column) * l + j).* =
-                                @bitCast(input[CHUNK_LEN * (t_inc * t_offset) + 4 * (k * @divExact(16, vecs_per_row) + l) ..][0..4].*);
-                        }
+            var reordered_vecs: [count * vecs_per_row]V(@min(count, 16)) = undefined;
+            if (half_half) {
+                for (0..@divExact(count, 2)) |i| {
+                    for (0..vecs_per_row) |j| {
+                        // reordered_vecs[i/@divExact(count,2)]
+                        reordered_vecs[vecs_per_row * i + j] = ordered_vecs[2 * vecs_per_row * i + j];
+                        reordered_vecs[vecs_per_row * (i + @divExact(count, 2)) + j] = ordered_vecs[2 * vecs_per_row * i + j + 1];
                     }
                 }
+            } else {
+                reordered_vecs = ordered_vecs;
             }
+            // std.debug.print("{x}\n", .{reordered_vecs});
+            var vecs: [16]V(count) = joinVecs(count * vecs_per_row, @min(count, 16), reordered_vecs, count);
 
-            if (builtin.cpu.arch.endian() == .big) {
-                for (0..16) |i| {
-                    vecs[i] = @byteSwap(vecs[i]);
-                }
-            }
+            // // std.debug.print("new: {x}\n", .{vecs});
+            //
+            // // var vecs: [16]V(count) = undefined;
+            //
+            // for (0..vecs_per_column) |i| {
+            //     for (0..@divExact(count, vecs_per_column)) |j| {
+            //         var t_offset = i * @divExact(count, vecs_per_column) + j;
+            //         if (half_half) {
+            //             t_offset = 2 * (t_offset % @divExact(count, 2)) + t_offset / @divExact(count, 2);
+            //         }
+            //
+            //         for (0..vecs_per_row) |k| {
+            //             for (0..@divExact(16, vecs_per_row)) |l| {
+            //                 index(count, &vecs[vecs_per_row * i + k], @divExact(count, vecs_per_column) * l + j).* =
+            //                     @bitCast(input[CHUNK_LEN * (t_inc * t_offset) + 4 * (k * @divExact(16, vecs_per_row) + l) ..][0..4].*);
+            //             }
+            //         }
+            //     }
+            // }
+            //
+            // if (builtin.cpu.arch.endian() == .big) {
+            //     for (0..16) |i| {
+            //         vecs[i] = @byteSwap(vecs[i]);
+            //     }
+            // }
+            //
+            // std.debug.print("old: {x}\n", .{vecs});
 
             inline while (vecs_per_column != 1) : ({
                 vecs_per_column = @divExact(vecs_per_column, 2);
