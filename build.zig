@@ -4,6 +4,8 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const valgrind = b.option(bool, "valgrind", "valgrind") orelse false;
+
     {
         const exe = b.addExecutable(.{
             .name = "zig-blake3",
@@ -11,7 +13,10 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
-        // exe.root_module.valgrind = true;
+
+        b.getInstallStep().dependOn(&b.addInstallFile(exe.getEmittedLlvmIr(), b.option([]const u8, "llvm", "llvm") orelse "root.ll").step);
+        b.getInstallStep().dependOn(&b.addInstallFile(exe.getEmittedAsm(), b.option([]const u8, "asm", "asm") orelse "root.S").step);
+        exe.root_module.valgrind = valgrind;
         exe.linkLibC();
         b.installArtifact(exe);
 
@@ -29,6 +34,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
+        exe.root_module.valgrind = valgrind;
         exe.linkLibC();
         b.installArtifact(exe);
 
@@ -62,6 +68,7 @@ pub fn build(b: *std.Build) void {
             },
             .flags = &.{"-DBLAKE3_NO_AVX512"},
         });
+        exe.root_module.valgrind = valgrind;
         exe.linkLibC();
 
         b.installArtifact(exe);
@@ -94,6 +101,7 @@ pub fn build(b: *std.Build) void {
             },
             .flags = &.{"-DBLAKE3_NO_AVX512"},
         });
+        exe.root_module.valgrind = valgrind;
         exe.linkLibC();
 
         b.installArtifact(exe);

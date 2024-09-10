@@ -66,6 +66,7 @@ fn index(len: comptime_int, v: *V(len), i: usize) *u32 {
     }
 }
 
+/// until function to generate a shuffle mask by repeating mask and adjusting the values to simulate multiple parallel shuffles
 fn repeatShuffleMask(
     len: comptime_int,
     repeats: comptime_int,
@@ -95,11 +96,11 @@ fn joinVecs(count: comptime_int, len: comptime_int, input: [count]V(len), target
 
 fn blocksToVectors(vec_len: comptime_int, count: comptime_int, input: [*]const u8, t_inc: usize, out: *[count * @divExact(16, vec_len)]V(vec_len)) void {
     for (0..count) |i| {
+        const block = input[CHUNK_LEN * (t_inc * i) ..][0..CHUNK_LEN];
         for (0..@divExact(16, vec_len)) |j| {
             for (0..vec_len) |k| {
                 index(vec_len, &out[@divExact(16, vec_len) * i + j], k).* =
-                    // out[@divExact(16, vec_len) * i + j][k] =
-                    @bitCast(input[CHUNK_LEN * (t_inc * i) + 4 * vec_len * j + 4 * k ..][0..4].*);
+                    @bitCast(block[4 * vec_len * j + 4 * k ..][0..4].*);
             }
         }
     }
@@ -110,39 +111,38 @@ fn blocksToVectors(vec_len: comptime_int, count: comptime_int, input: [*]const u
     }
 }
 
+fn g2(
+    Vec: type,
+    a_vec: *Vec,
+    b_vec: *Vec,
+    c_vec: *Vec,
+    d_vec: *Vec,
+    @"m_2i+0": Vec,
+    @"m_2i+1": Vec,
+) void {
+    a_vec.* +%= b_vec.* +% @"m_2i+0";
+    d_vec.* = std.math.rotr(Vec, d_vec.* ^ a_vec.*, 16);
+    c_vec.* +%= d_vec.*;
+    b_vec.* = std.math.rotr(Vec, b_vec.* ^ c_vec.*, 12);
+    a_vec.* +%= b_vec.* +% @"m_2i+1";
+    d_vec.* = std.math.rotr(Vec, d_vec.* ^ a_vec.*, 8);
+    c_vec.* +%= d_vec.*;
+    b_vec.* = std.math.rotr(Vec, b_vec.* ^ c_vec.*, 7);
+}
+
 inline fn compress2(
-    degree: comptime_int,
-    h: [8]V(degree),
-    m: *const [16]V(degree),
-    t_0: V(degree),
-    t_1: V(degree),
+    count: comptime_int,
+    h: [8]V(count),
+    m: *const [16]V(count),
+    t_0: V(count),
+    t_1: V(count),
     b: u32,
     d: u32,
     comptime truncated: bool,
     comptime mod_2_output_order: bool,
-    out: *[if (truncated) 8 else 16]V(degree),
+    out: *[if (truncated) 8 else 16]V(count),
 ) void {
-    const Vec = V(degree);
-
-    const g = struct {
-        fn g(
-            a_vec: *Vec,
-            b_vec: *Vec,
-            c_vec: *Vec,
-            d_vec: *Vec,
-            @"m_2i+0": Vec,
-            @"m_2i+1": Vec,
-        ) void {
-            a_vec.* +%= b_vec.* +% @"m_2i+0";
-            d_vec.* = std.math.rotr(Vec, d_vec.* ^ a_vec.*, 16);
-            c_vec.* +%= d_vec.*;
-            b_vec.* = std.math.rotr(Vec, b_vec.* ^ c_vec.*, 12);
-            a_vec.* +%= b_vec.* +% @"m_2i+1";
-            d_vec.* = std.math.rotr(Vec, d_vec.* ^ a_vec.*, 8);
-            c_vec.* +%= d_vec.*;
-            b_vec.* = std.math.rotr(Vec, b_vec.* ^ c_vec.*, 7);
-        }
-    }.g;
+    const Vec = V(count);
 
     var v_0: Vec = h[0];
     var v_1: Vec = h[1];
@@ -152,25 +152,25 @@ inline fn compress2(
     var v_5: Vec = h[5];
     var v_6: Vec = h[6];
     var v_7: Vec = h[7];
-    var v_8: Vec = splat(degree, IV_CONSTANTS[0]);
-    var v_9: Vec = splat(degree, IV_CONSTANTS[1]);
-    var v_10: Vec = splat(degree, IV_CONSTANTS[2]);
-    var v_11: Vec = splat(degree, IV_CONSTANTS[3]);
+    var v_8: Vec = splat(count, IV_CONSTANTS[0]);
+    var v_9: Vec = splat(count, IV_CONSTANTS[1]);
+    var v_10: Vec = splat(count, IV_CONSTANTS[2]);
+    var v_11: Vec = splat(count, IV_CONSTANTS[3]);
     var v_12: Vec = t_0;
     var v_13: Vec = t_1;
-    var v_14: Vec = splat(degree, b);
-    var v_15: Vec = splat(degree, d);
+    var v_14: Vec = splat(count, b);
+    var v_15: Vec = splat(count, d);
 
     inline for (MSG_SCHEDULE) |schedule| {
-        g(&v_0, &v_4, &v_8, &v_12, m[schedule[0]], m[schedule[1]]);
-        g(&v_1, &v_5, &v_9, &v_13, m[schedule[2]], m[schedule[3]]);
-        g(&v_2, &v_6, &v_10, &v_14, m[schedule[4]], m[schedule[5]]);
-        g(&v_3, &v_7, &v_11, &v_15, m[schedule[6]], m[schedule[7]]);
+        g2(Vec, &v_0, &v_4, &v_8, &v_12, m[schedule[0]], m[schedule[1]]);
+        g2(Vec, &v_1, &v_5, &v_9, &v_13, m[schedule[2]], m[schedule[3]]);
+        g2(Vec, &v_2, &v_6, &v_10, &v_14, m[schedule[4]], m[schedule[5]]);
+        g2(Vec, &v_3, &v_7, &v_11, &v_15, m[schedule[6]], m[schedule[7]]);
 
-        g(&v_0, &v_5, &v_10, &v_15, m[schedule[8]], m[schedule[9]]);
-        g(&v_1, &v_6, &v_11, &v_12, m[schedule[10]], m[schedule[11]]);
-        g(&v_2, &v_7, &v_8, &v_13, m[schedule[12]], m[schedule[13]]);
-        g(&v_3, &v_4, &v_9, &v_14, m[schedule[14]], m[schedule[15]]);
+        g2(Vec, &v_0, &v_5, &v_10, &v_15, m[schedule[8]], m[schedule[9]]);
+        g2(Vec, &v_1, &v_6, &v_11, &v_12, m[schedule[10]], m[schedule[11]]);
+        g2(Vec, &v_2, &v_7, &v_8, &v_13, m[schedule[12]], m[schedule[13]]);
+        g2(Vec, &v_3, &v_4, &v_9, &v_14, m[schedule[14]], m[schedule[15]]);
     }
 
     out[if (mod_2_output_order) 0 else 0] = v_0 ^ v_8;
@@ -196,21 +196,21 @@ inline fn compress2(
 }
 
 fn compress3(
-    degree: comptime_int,
-    h_0123: V(4 * degree),
-    h_4567: V(4 * degree),
+    count: comptime_int,
+    h_0123: V(4 * count),
+    h_4567: V(4 * count),
     /// The order of m is 0246 1357 e8ac f9bd (hex)
-    m: [4]V(4 * degree),
-    tbd: V(4 * degree),
+    m: [4]V(4 * count),
+    tbd: V(4 * count),
     comptime truncated: bool,
-    out: *[if (truncated) 2 else 4]V(4 * degree),
+    out: *[if (truncated) 2 else 4]V(4 * count),
 ) void {
-    @setEvalBranchQuota(596 + 600 * degree);
-    const Vec = V(4 * degree);
+    @setEvalBranchQuota(596 + 600 * count);
+    const Vec = V(4 * count);
 
     var v_0123: Vec = h_0123;
     var v_4567: Vec = h_4567;
-    var v_89ab: Vec = std.simd.repeat(4 * degree, IV_CONSTANTS[0..4].*);
+    var v_89ab: Vec = std.simd.repeat(4 * count, IV_CONSTANTS[0..4].*);
     var v_cdef: Vec = tbd;
 
     var m_0246: Vec = m[0];
@@ -230,9 +230,9 @@ fn compress3(
         v_4567 = std.math.rotr(Vec, v_4567 ^ v_89ab, 7);
 
         // diagonalization
-        var v_3012 = @shuffle(u32, v_0123, undefined, repeatShuffleMask(4, degree, [_]i32{ 3, 0, 1, 2 }, 4, -4));
-        var v_efcd = @shuffle(u32, v_cdef, undefined, repeatShuffleMask(4, degree, [_]i32{ 2, 3, 0, 1 }, 4, -4));
-        var v_9ab8 = @shuffle(u32, v_89ab, undefined, repeatShuffleMask(4, degree, [_]i32{ 1, 2, 3, 0 }, 4, -4));
+        var v_3012 = @shuffle(u32, v_0123, undefined, repeatShuffleMask(4, count, [_]i32{ 3, 0, 1, 2 }, 4, -4));
+        var v_efcd = @shuffle(u32, v_cdef, undefined, repeatShuffleMask(4, count, [_]i32{ 2, 3, 0, 1 }, 4, -4));
+        var v_9ab8 = @shuffle(u32, v_89ab, undefined, repeatShuffleMask(4, count, [_]i32{ 1, 2, 3, 0 }, 4, -4));
 
         // g
         v_3012 +%= v_4567 +% m_e8ac;
@@ -245,21 +245,21 @@ fn compress3(
         v_4567 = std.math.rotr(Vec, v_4567 ^ v_9ab8, 7);
 
         // undiagonalization
-        v_0123 = @shuffle(u32, v_3012, undefined, repeatShuffleMask(4, degree, [_]i32{ 1, 2, 3, 0 }, 4, -4));
-        v_cdef = @shuffle(u32, v_efcd, undefined, repeatShuffleMask(4, degree, [_]i32{ 2, 3, 0, 1 }, 4, -4));
-        v_89ab = @shuffle(u32, v_9ab8, undefined, repeatShuffleMask(4, degree, [_]i32{ 3, 0, 1, 2 }, 4, -4));
+        v_0123 = @shuffle(u32, v_3012, undefined, repeatShuffleMask(4, count, [_]i32{ 1, 2, 3, 0 }, 4, -4));
+        v_cdef = @shuffle(u32, v_efcd, undefined, repeatShuffleMask(4, count, [_]i32{ 2, 3, 0, 1 }, 4, -4));
+        v_89ab = @shuffle(u32, v_9ab8, undefined, repeatShuffleMask(4, count, [_]i32{ 3, 0, 1, 2 }, 4, -4));
 
         if (comptime i != 6) {
             // permuation
             // 0 1 2 3 4 5 6 7 8 9 a b c d e f
             // 2 6 3 a 7 0 4 d 1 b c 5 9 e f 8
-            const m_2374 = @shuffle(u32, m_0246, m_1357, repeatShuffleMask(4, degree, [_]i32{ 1, ~@as(i32, 1), ~@as(i32, 3), 2 }, 4, -4));
-            const m_ad = @shuffle(u32, m_e8ac, m_f9bd, repeatShuffleMask(2, degree, [_]i32{ 2, ~@as(i32, 3) }, 4, -4));
-            const m_6a0d = @shuffle(u32, m_0246, m_ad, repeatShuffleMask(4, degree, [_]i32{ 3, ~@as(i32, 0), 0, ~@as(i32, 1) }, 4, -2));
-            const m_1c = @shuffle(u32, m_1357, m_e8ac, repeatShuffleMask(2, degree, [_]i32{ 0, ~@as(i32, 3) }, 4, -4));
-            const m_f1c9 = @shuffle(u32, m_f9bd, m_1c, repeatShuffleMask(4, degree, [_]i32{ 0, ~@as(i32, 0), ~@as(i32, 1), 1 }, 4, -2));
-            const m_b5 = @shuffle(u32, m_f9bd, m_1357, repeatShuffleMask(2, degree, [_]i32{ 2, ~@as(i32, 2) }, 4, -4));
-            const m_8b5e = @shuffle(u32, m_e8ac, m_b5, repeatShuffleMask(4, degree, [_]i32{ 1, ~@as(i32, 0), ~@as(i32, 1), 0 }, 4, -2));
+            const m_2374 = @shuffle(u32, m_0246, m_1357, repeatShuffleMask(4, count, [_]i32{ 1, ~@as(i32, 1), ~@as(i32, 3), 2 }, 4, -4));
+            const m_ad = @shuffle(u32, m_e8ac, m_f9bd, repeatShuffleMask(2, count, [_]i32{ 2, ~@as(i32, 3) }, 4, -4));
+            const m_6a0d = @shuffle(u32, m_0246, m_ad, repeatShuffleMask(4, count, [_]i32{ 3, ~@as(i32, 0), 0, ~@as(i32, 1) }, 4, -2));
+            const m_1c = @shuffle(u32, m_1357, m_e8ac, repeatShuffleMask(2, count, [_]i32{ 0, ~@as(i32, 3) }, 4, -4));
+            const m_f1c9 = @shuffle(u32, m_f9bd, m_1c, repeatShuffleMask(4, count, [_]i32{ 0, ~@as(i32, 0), ~@as(i32, 1), 1 }, 4, -2));
+            const m_b5 = @shuffle(u32, m_f9bd, m_1357, repeatShuffleMask(2, count, [_]i32{ 2, ~@as(i32, 2) }, 4, -4));
+            const m_8b5e = @shuffle(u32, m_e8ac, m_b5, repeatShuffleMask(4, count, [_]i32{ 1, ~@as(i32, 0), ~@as(i32, 1), 0 }, 4, -2));
             m_0246 = m_2374;
             m_1357 = m_6a0d;
             m_e8ac = m_f1c9;
@@ -387,11 +387,10 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
 
         fn transposeBlocks(count: comptime_int, len: comptime_int, blocks_per_vec: comptime_int, vecs: [@divExact(16 * count, len)]V(len), out: *[16]V(count)) void {
             if (blocks_per_vec == count) {
-                // TODO:
+                // end of recursion; write vec to out
                 const len_or_16 = @min(len, 16);
                 if (len == count) {
                     if (len < 4) {
-                        // if vec_len is 1 this is always the case
                         out.* = vecs;
                     } else {
                         for (0..@divExact(16, len_or_16)) |i| {
@@ -401,35 +400,26 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                             }
                         }
                     }
-                } else {
-                    if (count != 1 and (len == 2 * count or len == 4 * count)) {
-                        // for (&vecs, 0..) |vec, i| {
-                        //     inline for (0..@divExact(len, 2 * count)) |j| {
-                        //         out[0 + @divExact(len, 2 * count) * i + j] = std.simd.extract(vec, 0 + count * j, count);
-                        //         out[8 + @divExact(len, 2 * count) * i + j] = std.simd.extract(vec, @divExact(len, 2) + count * j, count);
-                        //     }
-                        // }
-
-                        for (0..@divExact(16, len_or_16)) |i| {
-                            for (0..@divExact(len_or_16 * count, len)) |j| {
-                                const vec = vecs[@divExact(len_or_16 * count, len) * i + j];
-                                inline for (0..@divExact(len, 2 * count)) |k| {
-                                    out[len_or_16 * i + 0 + @divExact(len, 2 * count) * j + k] = std.simd.extract(vec, count * k, count);
-                                    out[len_or_16 * i + @divExact(len_or_16, 2) + @divExact(len, 2 * count) * j + k] = std.simd.extract(vec, @divExact(len, 2) + count * k, count);
-                                }
-                                // out[@divExact(len_or_16 * count, len)*i+j];
+                } else if (count != 1 and (len == 2 * count or len == 4 * count)) {
+                    for (0..@divExact(16, len_or_16)) |i| {
+                        for (0..@divExact(len_or_16 * count, len)) |j| {
+                            const vec = vecs[@divExact(len_or_16 * count, len) * i + j];
+                            inline for (0..@divExact(len, 2 * count)) |k| {
+                                out[len_or_16 * i + 0 + @divExact(len, 2 * count) * j + k] = std.simd.extract(vec, count * k, count);
+                                out[len_or_16 * i + @divExact(len_or_16, 2) + @divExact(len, 2 * count) * j + k] = std.simd.extract(vec, @divExact(len, 2) + count * k, count);
                             }
                         }
-                    } else {
-                        for (&vecs, 0..) |vec, i| {
-                            inline for (0..@divExact(len, count)) |j| {
-                                out[@divExact(len, count) * i + j] = if (count == 1) vec[j] else std.simd.extract(vec, count * j, count);
-                            }
+                    }
+                } else {
+                    for (&vecs, 0..) |vec, i| {
+                        inline for (0..@divExact(len, count)) |j| {
+                            out[@divExact(len, count) * i + j] = if (count == 1) vec[j] else std.simd.extract(vec, count * j, count);
                         }
                     }
                 }
             } else {
                 if (len < vec_len) {
+                    // This case makes the vectors of the next recursive step have double the amound of represented blocks, by using twice as large vectors.
                     std.debug.assert(len >= 16);
 
                     const new_len = 2 * len;
@@ -438,16 +428,12 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                         new_vecs[i] = @shuffle(u32, vecs[2 * i + 0], vecs[2 * i + 1], repeatShuffleMask(2 * blocks_per_vec, @divExact(len, blocks_per_vec), std.simd.join(std.simd.iota(i32, blocks_per_vec), ~std.simd.iota(i32, blocks_per_vec)), blocks_per_vec, -blocks_per_vec));
                     }
 
-                    // std.debug.print("fst: {x}\n", .{new_vecs});
                     transposeBlocks(count, new_len, 2 * blocks_per_vec, new_vecs, out);
                 } else {
+                    // This case makes the vectors of the next recursive step have double the amound of represented blocks, by having less values per block in each vector.
                     var new_vecs: [@divExact(16 * count, len)]V(len) = undefined;
-                    // for (0..@divExact(8 * count, len)) |i| {
                     for (0..@divExact(count, 2 * blocks_per_vec)) |i| {
                         for (0..@divExact(16 * blocks_per_vec, len)) |j| {
-                            // new_vecs[2 * @divExact(16 * blocks_per_vec, len) * i + 2 * j + 0] = @shuffle(u32, vecs[2 * @divExact(16 * blocks_per_vec, len) * i + j], vecs[2 * @divExact(16 * blocks_per_vec, len) * i + j + @divExact(16 * blocks_per_vec, len)], repeatShuffleMask(2 * blocks_per_vec, @divExact(len, 2 * blocks_per_vec), std.simd.join(std.simd.iota(i32, blocks_per_vec), ~std.simd.iota(i32, blocks_per_vec)), 2 * blocks_per_vec, -2 * blocks_per_vec));
-                            // new_vecs[2 * @divExact(16 * blocks_per_vec, len) * i + 2 * j + 1] = @shuffle(u32, vecs[2 * @divExact(16 * blocks_per_vec, len) * i + j], vecs[2 * @divExact(16 * blocks_per_vec, len) * i + j + @divExact(16 * blocks_per_vec, len)], repeatShuffleMask(2 * blocks_per_vec, @divExact(len, 2 * blocks_per_vec), std.simd.join((@as(@Vector(blocks_per_vec, i32), @splat(blocks_per_vec)) + std.simd.iota(i32, blocks_per_vec)), ~(@as(@Vector(blocks_per_vec, i32), @splat(blocks_per_vec)) + std.simd.iota(i32, blocks_per_vec))), 2 * blocks_per_vec, -2 * blocks_per_vec));
-
                             const zero_to_bpv = std.simd.iota(i32, blocks_per_vec);
                             const low_mask = comptime repeatShuffleMask(2 * blocks_per_vec, @divExact(len, 2 * blocks_per_vec), std.simd.join(zero_to_bpv, ~zero_to_bpv), blocks_per_vec, -blocks_per_vec);
                             const high_mask = comptime repeatShuffleMask(2 * blocks_per_vec, @divExact(len, 2 * blocks_per_vec), std.simd.join(
@@ -469,174 +455,178 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                             new_vecs[2 * @divExact(16 * blocks_per_vec, len) * i + 2 * j + 0] = @shuffle(u32, vecs[2 * @divExact(16 * blocks_per_vec, len) * i + j], vecs[2 * @divExact(16 * blocks_per_vec, len) * i + j + @divExact(16 * blocks_per_vec, len)], mask_0);
                             new_vecs[2 * @divExact(16 * blocks_per_vec, len) * i + 2 * j + 1] = @shuffle(u32, vecs[2 * @divExact(16 * blocks_per_vec, len) * i + j], vecs[2 * @divExact(16 * blocks_per_vec, len) * i + j + @divExact(16 * blocks_per_vec, len)], mask_1);
                         }
-                        // new_vecs[^
-                        // new_vecs[2*i+0] = @shuffle(comptime E: type, a: @Vector(a_len, E), b: @Vector(b_len, E), comptime mask: @Vector(mask_len, i32))
                     }
-                    // std.debug.print("snd: {x}\n", .{new_vecs});
                     transposeBlocks(count, len, 2 * blocks_per_vec, new_vecs, out);
                 }
             }
         }
 
-        fn blocksToVectors2(count: comptime_int, input: [*]const u8, t_inc: usize, comptime half_half: bool, out: *[16]V(count)) void {
-            const len = @min(16, vec_len);
-            var ordered_vecs: [count * @divExact(16, len)]V(len) = undefined;
+        inline fn blocksToVectors2(count: comptime_int, input: [*]const u8, t_inc: usize, comptime half_half: bool, out: *[16]V(count)) void {
+            // @setEvalBranchQuota(80000);
+            //
+            const new = true;
 
-            blocksToVectors(len, count, input, t_inc, &ordered_vecs);
+            if (new) {
+                const len = @min(16, vec_len);
+                var ordered_vecs: [count * @divExact(16, len)]V(len) = undefined;
 
-            var reordered_vecs: [count * @divExact(16, len)]V(len) = undefined;
-            if (half_half) {
-                for (0..@divExact(count, 2)) |i| {
-                    for (0..@divExact(16, len)) |j| {
-                        // reordered_vecs[i/@divExact(count,2)]
-                        reordered_vecs[@divExact(16, len) * i + j] = ordered_vecs[(2 * i + 0) * @divExact(16, len) + j];
-                        reordered_vecs[@divExact(16, len) * (i + @divExact(count, 2)) + j] = ordered_vecs[(2 * i + 1) * @divExact(16, len) + j];
+                blocksToVectors(len, count, input, t_inc, &ordered_vecs);
+
+                var reordered_vecs: [count * @divExact(16, len)]V(len) = undefined;
+                if (half_half) {
+                    for (0..@divExact(count, 2)) |i| {
+                        for (0..@divExact(16, len)) |j| {
+                            // reordered_vecs[i/@divExact(count,2)]
+                            reordered_vecs[@divExact(16, len) * i + j] = ordered_vecs[(2 * i + 0) * @divExact(16, len) + j];
+                            reordered_vecs[@divExact(16, len) * (i + @divExact(count, 2)) + j] = ordered_vecs[(2 * i + 1) * @divExact(16, len) + j];
+                        }
+                    }
+                } else {
+                    reordered_vecs = ordered_vecs;
+                }
+
+                // std.debug.print("reordered: {x}\n", .{reordered_vecs});
+
+                // var new_out: [16]V(count) = undefined;
+
+                // std.debug.print("{}\n", .{vec_len});
+
+                transposeBlocks(count, len, 1, reordered_vecs, out);
+            } else {
+
+                // old
+                // // 16 :@setEvalBranchQuota(1031);
+                // // 32: @setEvalBranchQuota(1578);
+                // // @setEvalBranchQuota(2624);
+                // // @setEvalBranchQuota(500 + 34 * count);
+                // // if (count != 64) return;
+                // // @compileLog(count);
+                // // @setEvalBranchQuota(20000);
+
+                // @compileLog(count);
+
+                // 16: @setEvalBranchQuota(1031);
+                // 32: @setEvalBranchQuota(1578);
+                // 64: @setEvalBranchQuota(2624);
+                // 128 @setEvalBranchQuota(4716);
+                // @setEvalBranchQuota(8924);
+                @setEvalBranchQuota(80924);
+                //
+                comptime var vecs_per_row = @divExact(16, @min(count, 16));
+                comptime var vecs_per_column = @divExact(16, vecs_per_row);
+                //
+                // var ordered_vecs: [count * vecs_per_row]V(@min(count, 16)) = undefined;
+                //
+                // blocksToVectors(@min(count, 16), count, input, t_inc, &ordered_vecs);
+                //
+                // var reordered_vecs: [count * vecs_per_row]V(@min(count, 16)) = undefined;
+                // if (half_half) {
+                //     for (0..@divExact(count, 2)) |i| {
+                //         for (0..vecs_per_row) |j| {
+                //             // reordered_vecs[i/@divExact(count,2)]
+                //             reordered_vecs[vecs_per_row * i + j] = ordered_vecs[(2 * i + 0) * vecs_per_row + j];
+                //             reordered_vecs[vecs_per_row * (i + @divExact(count, 2)) + j] = ordered_vecs[(2 * i + 1) * vecs_per_row + j];
+                //         }
+                //     }
+                // } else {
+                //     reordered_vecs = ordered_vecs;
+                // }
+                // // std.debug.print("{x}\n", .{reordered_vecs});
+                // // var vecs: [16]V(count) = joinVecs(count * vecs_per_row, @min(count, 16), reordered_vecs, count);
+                //
+                var vecs: [16]V(count) = undefined;
+
+                for (0..vecs_per_column) |i| {
+                    for (0..@divExact(count, vecs_per_column)) |j| {
+                        var t_offset = i * @divExact(count, vecs_per_column) + j;
+                        if (half_half) {
+                            t_offset = 2 * (t_offset % @divExact(count, 2)) + t_offset / @divExact(count, 2);
+                        }
+
+                        for (0..vecs_per_row) |k| {
+                            for (0..@divExact(16, vecs_per_row)) |l| {
+                                index(count, &vecs[vecs_per_row * i + k], @divExact(count, vecs_per_column) * l + j).* =
+                                    @bitCast(input[CHUNK_LEN * (t_inc * t_offset) + 4 * (k * @divExact(16, vecs_per_row) + l) ..][0..4].*);
+                            }
+                        }
                     }
                 }
-            } else {
-                reordered_vecs = ordered_vecs;
+
+                if (builtin.cpu.arch.endian() == .big) {
+                    for (0..16) |i| {
+                        vecs[i] = @byteSwap(vecs[i]);
+                    }
+                }
+
+                // const n_vecs = joinVecs(count * vecs_per_row, @min(count, 16), reordered_vecs, count);
+                //
+                // for (&vecs, &n_vecs) |v, n| {
+                //     if ((count == 1 and v != n) or (count != 1 and @reduce(.Or, v != n))) {
+                //         std.debug.print("old: {x}\n", .{vecs});
+                //         std.debug.print("new: {x}\n", .{n_vecs});
+                //         std.debug.print("new_reordered: {x}\n", .{reordered_vecs});
+                //         std.debug.print("h: {}\n", .{half_half});
+                //         @panic("panic!!!");
+                //     }
+                // }
+
+                // leave at V((count, 16))
+                // then transpose first until V()
+
+                inline while (vecs_per_column != 1) : ({
+                    vecs_per_column = @divExact(vecs_per_column, 2);
+                    vecs_per_row *= 2;
+                }) {
+                    var new_vecs: [16]V(count) = undefined;
+
+                    const columns_per_vec = @divExact(count, vecs_per_column);
+                    const first_column_mask_0 = std.simd.iota(i32, columns_per_vec);
+                    comptime var mask_0 = repeatShuffleMask(
+                        2 * columns_per_vec,
+                        @divExact(8, vecs_per_row),
+                        std.simd.join(first_column_mask_0, ~first_column_mask_0),
+                        columns_per_vec,
+                        -columns_per_vec,
+                    );
+                    const first_column_mask_1 = @as(@Vector(columns_per_vec, i32), @splat(@divExact(count, 2))) + first_column_mask_0;
+                    comptime var mask_1 = repeatShuffleMask(
+                        2 * columns_per_vec,
+                        @divExact(8, vecs_per_row),
+                        std.simd.join(first_column_mask_1, ~first_column_mask_1),
+                        columns_per_vec,
+                        -columns_per_vec,
+                    );
+
+                    comptime var vec_1_offset = 1;
+
+                    if (vecs_per_column > 2) {
+                        const mask_0_begin = comptime std.simd.extract(mask_0, 0, @divExact(count, 2));
+                        const mask_0_end = comptime std.simd.extract(mask_1, 0, @divExact(count, 2));
+                        const mask_1_begin = comptime std.simd.extract(mask_0, @divExact(count, 2), @divExact(count, 2));
+                        const mask_1_end = comptime std.simd.extract(mask_1, @divExact(count, 2), @divExact(count, 2));
+                        mask_0 = comptime std.simd.join(mask_0_begin, mask_0_end);
+                        mask_1 = comptime std.simd.join(mask_1_begin, mask_1_end);
+                    } else {
+                        vec_1_offset = @min(@divExact(count, 2), 8);
+                    }
+
+                    for (0..@divExact(vecs_per_column, 2)) |i| {
+                        for (0..@divExact(vecs_per_row, vec_1_offset)) |j| {
+                            for (0..vec_1_offset) |k| {
+                                const vec_0 = vecs[vecs_per_row * (2 * i + 0) + vec_1_offset * j + k];
+                                const vec_1 = vecs[vecs_per_row * (2 * i + 1) + vec_1_offset * j + k];
+
+                                new_vecs[2 * vecs_per_row * i + (j * 2 + 0) * vec_1_offset + k] = @shuffle(u32, vec_0, vec_1, mask_0);
+                                new_vecs[2 * vecs_per_row * i + (j * 2 + 1) * vec_1_offset + k] = @shuffle(u32, vec_0, vec_1, mask_1);
+                            }
+                        }
+                    }
+                    vecs = new_vecs;
+                }
+                comptime std.debug.assert(vecs_per_row == 16);
+
+                out.* = vecs;
             }
-
-            // std.debug.print("reordered: {x}\n", .{reordered_vecs});
-
-            // var new_out: [16]V(count) = undefined;
-
-            // std.debug.print("{}\n", .{vec_len});
-
-            transposeBlocks(count, len, 1, reordered_vecs, out);
-
-            // // // old
-            // // // // 16 :@setEvalBranchQuota(1031);
-            // // // // 32: @setEvalBranchQuota(1578);
-            // // // // @setEvalBranchQuota(2624);
-            // // // // @setEvalBranchQuota(500 + 34 * count);
-            // // // // if (count != 64) return;
-            // // // // @compileLog(count);
-            // // // // @setEvalBranchQuota(20000);
-            // //
-            // // // @compileLog(count);
-            // //
-            // // // 16: @setEvalBranchQuota(1031);
-            // // // 32: @setEvalBranchQuota(1578);
-            // // // 64: @setEvalBranchQuota(2624);
-            // // // 128 @setEvalBranchQuota(4716);
-            // // // @setEvalBranchQuota(8924);
-            // @setEvalBranchQuota(80924);
-            // //
-            // comptime var vecs_per_row = @divExact(16, @min(count, 16));
-            // comptime var vecs_per_column = @divExact(16, vecs_per_row);
-            // //
-            // // var ordered_vecs: [count * vecs_per_row]V(@min(count, 16)) = undefined;
-            // //
-            // // blocksToVectors(@min(count, 16), count, input, t_inc, &ordered_vecs);
-            // //
-            // // var reordered_vecs: [count * vecs_per_row]V(@min(count, 16)) = undefined;
-            // // if (half_half) {
-            // //     for (0..@divExact(count, 2)) |i| {
-            // //         for (0..vecs_per_row) |j| {
-            // //             // reordered_vecs[i/@divExact(count,2)]
-            // //             reordered_vecs[vecs_per_row * i + j] = ordered_vecs[(2 * i + 0) * vecs_per_row + j];
-            // //             reordered_vecs[vecs_per_row * (i + @divExact(count, 2)) + j] = ordered_vecs[(2 * i + 1) * vecs_per_row + j];
-            // //         }
-            // //     }
-            // // } else {
-            // //     reordered_vecs = ordered_vecs;
-            // // }
-            // // // std.debug.print("{x}\n", .{reordered_vecs});
-            // // // var vecs: [16]V(count) = joinVecs(count * vecs_per_row, @min(count, 16), reordered_vecs, count);
-            // //
-            // var vecs: [16]V(count) = undefined;
-            //
-            // for (0..vecs_per_column) |i| {
-            //     for (0..@divExact(count, vecs_per_column)) |j| {
-            //         var t_offset = i * @divExact(count, vecs_per_column) + j;
-            //         if (half_half) {
-            //             t_offset = 2 * (t_offset % @divExact(count, 2)) + t_offset / @divExact(count, 2);
-            //         }
-            //
-            //         for (0..vecs_per_row) |k| {
-            //             for (0..@divExact(16, vecs_per_row)) |l| {
-            //                 index(count, &vecs[vecs_per_row * i + k], @divExact(count, vecs_per_column) * l + j).* =
-            //                     @bitCast(input[CHUNK_LEN * (t_inc * t_offset) + 4 * (k * @divExact(16, vecs_per_row) + l) ..][0..4].*);
-            //             }
-            //         }
-            //     }
-            // }
-            //
-            // if (builtin.cpu.arch.endian() == .big) {
-            //     for (0..16) |i| {
-            //         vecs[i] = @byteSwap(vecs[i]);
-            //     }
-            // }
-            //
-            // // const n_vecs = joinVecs(count * vecs_per_row, @min(count, 16), reordered_vecs, count);
-            // //
-            // // for (&vecs, &n_vecs) |v, n| {
-            // //     if ((count == 1 and v != n) or (count != 1 and @reduce(.Or, v != n))) {
-            // //         std.debug.print("old: {x}\n", .{vecs});
-            // //         std.debug.print("new: {x}\n", .{n_vecs});
-            // //         std.debug.print("new_reordered: {x}\n", .{reordered_vecs});
-            // //         std.debug.print("h: {}\n", .{half_half});
-            // //         @panic("panic!!!");
-            // //     }
-            // // }
-            //
-            // // leave at V((count, 16))
-            // // then transpose first until V()
-            //
-            // inline while (vecs_per_column != 1) : ({
-            //     vecs_per_column = @divExact(vecs_per_column, 2);
-            //     vecs_per_row *= 2;
-            // }) {
-            //     var new_vecs: [16]V(count) = undefined;
-            //
-            //     const columns_per_vec = @divExact(count, vecs_per_column);
-            //     const first_column_mask_0 = std.simd.iota(i32, columns_per_vec);
-            //     comptime var mask_0 = repeatShuffleMask(
-            //         2 * columns_per_vec,
-            //         @divExact(8, vecs_per_row),
-            //         std.simd.join(first_column_mask_0, ~first_column_mask_0),
-            //         columns_per_vec,
-            //         -columns_per_vec,
-            //     );
-            //     const first_column_mask_1 = @as(@Vector(columns_per_vec, i32), @splat(@divExact(count, 2))) + first_column_mask_0;
-            //     comptime var mask_1 = repeatShuffleMask(
-            //         2 * columns_per_vec,
-            //         @divExact(8, vecs_per_row),
-            //         std.simd.join(first_column_mask_1, ~first_column_mask_1),
-            //         columns_per_vec,
-            //         -columns_per_vec,
-            //     );
-            //
-            //     comptime var vec_1_offset = 1;
-            //
-            //     if (vecs_per_column > 2) {
-            //         const mask_0_begin = comptime std.simd.extract(mask_0, 0, @divExact(count, 2));
-            //         const mask_0_end = comptime std.simd.extract(mask_1, 0, @divExact(count, 2));
-            //         const mask_1_begin = comptime std.simd.extract(mask_0, @divExact(count, 2), @divExact(count, 2));
-            //         const mask_1_end = comptime std.simd.extract(mask_1, @divExact(count, 2), @divExact(count, 2));
-            //         mask_0 = comptime std.simd.join(mask_0_begin, mask_0_end);
-            //         mask_1 = comptime std.simd.join(mask_1_begin, mask_1_end);
-            //     } else {
-            //         vec_1_offset = @min(@divExact(count, 2), 8);
-            //     }
-            //
-            //     for (0..@divExact(vecs_per_column, 2)) |i| {
-            //         for (0..@divExact(vecs_per_row, vec_1_offset)) |j| {
-            //             for (0..vec_1_offset) |k| {
-            //                 const vec_0 = vecs[vecs_per_row * (2 * i + 0) + vec_1_offset * j + k];
-            //                 const vec_1 = vecs[vecs_per_row * (2 * i + 1) + vec_1_offset * j + k];
-            //
-            //                 new_vecs[2 * vecs_per_row * i + (j * 2 + 0) * vec_1_offset + k] = @shuffle(u32, vec_0, vec_1, mask_0);
-            //                 new_vecs[2 * vecs_per_row * i + (j * 2 + 1) * vec_1_offset + k] = @shuffle(u32, vec_0, vec_1, mask_1);
-            //             }
-            //         }
-            //     }
-            //     vecs = new_vecs;
-            // }
-            // comptime std.debug.assert(vecs_per_row == 16);
-            //
-            // out.* = vecs;
             //
             // for (out, &new_out) |v, n| {
             //     if ((count == 1 and v != n) or (count != 1 and @reduce(.Or, v != n))) {
@@ -774,6 +764,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
 
             inline for (0..(CHUNK_LEN / BLOCK_LEN)) |i| {
                 var m: [16]CountVec = undefined;
+                // @call(.always_inline, blocksToVectors2, .{ count, input[i * BLOCK_LEN ..], t_inc, half_half, &m });
                 blocksToVectors2(count, input[i * BLOCK_LEN ..], t_inc, half_half, &m);
 
                 compress2(

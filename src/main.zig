@@ -22,7 +22,7 @@ fn run() !void {
 
     var out: [32]u8 = undefined;
 
-    // std.valgrind.callgrind.startInstrumentation();
+    std.valgrind.callgrind.startInstrumentation();
     if (config.c) {
         var hasher: c.blake3_hasher = undefined;
         c.blake3_hasher_init(&hasher);
@@ -33,7 +33,7 @@ fn run() !void {
     } else {
         blake3.Blake3(.{}).hash(area, &out, .{});
     }
-    // std.valgrind.callgrind.stopInstrumentation();
+    std.valgrind.callgrind.stopInstrumentation();
 
     try stdout.writer().print("{s}\n", .{std.fmt.bytesToHex(out, .lower)});
 }
