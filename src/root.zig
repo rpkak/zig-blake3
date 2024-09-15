@@ -3,7 +3,7 @@ const builtin = @import("builtin");
 
 // In this file, some function names end with 2 or 3.
 // The postfix 2 indicates that this function uses SIMD as described in the second approach described in the BLAKE3 specification, section 5.3.
-// The postfix 3 indicates that this function uses SIMD as described in the third approach (or first approach) described in the BLAKE3 specification, section 5.3
+// The postfix 3 indicates that this function uses SIMD as described in the third approach (or first approach) described in the BLAKE3 specification, section 5.3.
 
 const CHUNK_START: u8 = 1 << 0;
 const CHUNK_END: u8 = 1 << 1;
@@ -49,16 +49,16 @@ fn V(len: comptime_int) type {
     }
 }
 
-fn splat(len: comptime_int, scalar: u32) V(len) {
-    if (len == 1) {
+fn splat(vec_len: comptime_int, scalar: u32) V(vec_len) {
+    if (vec_len == 1) {
         return scalar;
     } else {
         return @splat(scalar);
     }
 }
 
-fn index(len: comptime_int, v: *V(len), i: usize) *u32 {
-    if (len == 1) {
+fn index(vec_len: comptime_int, v: *V(vec_len), i: usize) *u32 {
+    if (vec_len == 1) {
         std.debug.assert(i == 0);
         return v;
     } else {
@@ -66,7 +66,7 @@ fn index(len: comptime_int, v: *V(len), i: usize) *u32 {
     }
 }
 
-/// until function to generate a shuffle mask by repeating mask and adjusting the values to simulate multiple parallel shuffles
+/// Until function to generate a shuffle mask by repeating mask and adjusting the values to simulate multiple parallel shuffles.
 fn repeatShuffleMask(
     len: comptime_int,
     repeats: comptime_int,
@@ -82,18 +82,19 @@ fn repeatShuffleMask(
         @select(i32, repeated_mask >= @as(Vec, @splat(0)), @as(Vec, @splat(a)), @as(Vec, @splat(b)));
 }
 
-fn joinVecs(count: comptime_int, len: comptime_int, input: [count]V(len), target_len: comptime_int) [@divExact(count * len, target_len)]V(target_len) {
-    if (len == target_len) {
+fn joinVecs(count: comptime_int, current_vec_len: comptime_int, input: [count]V(current_vec_len), target_vec_len: comptime_int) [@divExact(count * current_vec_len, target_vec_len)]V(target_vec_len) {
+    if (current_vec_len == target_vec_len) {
         return input;
     } else {
-        var next_input: [@divExact(count, 2)]V(2 * len) = undefined;
+        var next_input: [@divExact(count, 2)]V(2 * current_vec_len) = undefined;
         for (0..@divExact(count, 2)) |i| {
             next_input[i] = std.simd.join(input[2 * i + 0], input[2 * i + 1]);
         }
-        return joinVecs(@divExact(count, 2), 2 * len, next_input, target_len);
+        return joinVecs(@divExact(count, 2), 2 * current_vec_len, next_input, target_vec_len);
     }
 }
 
+/// Reads count blocks that have an offset of t_inc chunks to each other into vectors.
 fn blocksToVectors(vec_len: comptime_int, count: comptime_int, input: [*]const u8, t_inc: usize, out: *[count * @divExact(16, vec_len)]V(vec_len)) void {
     for (0..count) |i| {
         const block = input[CHUNK_LEN * (t_inc * i) ..][0..CHUNK_LEN];
@@ -130,6 +131,8 @@ fn g2(
     b_vec.* = std.math.rotr(Vec, b_vec.* ^ c_vec.*, 7);
 }
 
+// output
+// inline has significant performance advantage.
 inline fn compress2(
     count: comptime_int,
     h: [8]V(count),
@@ -139,7 +142,6 @@ inline fn compress2(
     b: u32,
     d: u32,
     comptime truncated: bool,
-    comptime mod_2_output_order: bool,
     out: *[if (truncated) 8 else 16]V(count),
 ) void {
     const Vec = V(count);
@@ -173,17 +175,16 @@ inline fn compress2(
         g2(Vec, &v_3, &v_4, &v_9, &v_14, m[schedule[14]], m[schedule[15]]);
     }
 
-    out[if (mod_2_output_order) 0 else 0] = v_0 ^ v_8;
-    out[if (mod_2_output_order) 4 else 1] = v_1 ^ v_9;
-    out[if (mod_2_output_order) 1 else 2] = v_2 ^ v_10;
-    out[if (mod_2_output_order) 5 else 3] = v_3 ^ v_11;
-    out[if (mod_2_output_order) 2 else 4] = v_4 ^ v_12;
-    out[if (mod_2_output_order) 6 else 5] = v_5 ^ v_13;
-    out[if (mod_2_output_order) 3 else 6] = v_6 ^ v_14;
-    out[if (mod_2_output_order) 7 else 7] = v_7 ^ v_15;
+    out[0] = v_0 ^ v_8;
+    out[1] = v_1 ^ v_9;
+    out[2] = v_2 ^ v_10;
+    out[3] = v_3 ^ v_11;
+    out[4] = v_4 ^ v_12;
+    out[5] = v_5 ^ v_13;
+    out[6] = v_6 ^ v_14;
+    out[7] = v_7 ^ v_15;
 
     if (!truncated) {
-        comptime std.debug.assert(!mod_2_output_order);
         out[8] = v_8 ^ h[0];
         out[9] = v_9 ^ h[1];
         out[10] = v_10 ^ h[2];
@@ -195,11 +196,11 @@ inline fn compress2(
     }
 }
 
+/// The order of m is 0246 1357 e8ac f9bd (hex).
 fn compress3(
     count: comptime_int,
     h_0123: V(4 * count),
     h_4567: V(4 * count),
-    /// The order of m is 0246 1357 e8ac f9bd (hex)
     m: [4]V(4 * count),
     tbd: V(4 * count),
     comptime truncated: bool,
@@ -276,21 +277,21 @@ fn compress3(
 }
 
 pub const ComptimeOptions = struct {
-    /// Max amount of u32 in one simd vector, or 1 to not use simd
+    /// Max amount of u32 in one simd vector, or 1 to not use simd.
     vector_length: comptime_int = std.simd.suggestVectorLength(u32) orelse 1,
 };
 
 pub fn Blake3(comptime_options: ComptimeOptions) type {
     std.debug.assert(std.math.isPowerOfTwo(comptime_options.vector_length));
 
-    const vec_len = comptime_options.vector_length;
-    const vec_len_log = @ctz(@as(usize, vec_len));
-    const Vec = V(vec_len);
+    const max_vec_len = comptime_options.vector_length;
+    const max_vec_len_log = @ctz(@as(usize, max_vec_len));
+    const Vec = V(max_vec_len);
 
-    const third_approach = vec_len_log >= 2;
+    const third_approach = max_vec_len_log >= 2;
 
-    const half_vec_len = if (third_approach) 1 << (vec_len_log - 1) else {};
-    const HalfVec = if (third_approach) V(half_vec_len) else {};
+    const half_max_vec_len = if (third_approach) 1 << (max_vec_len_log - 1) else {};
+    const HalfVec = if (third_approach) V(half_max_vec_len) else {};
 
     const Element = if (third_approach) V(4) else u32;
     const elements_per_8 = if (third_approach) 2 else 8;
@@ -325,9 +326,9 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
             var big_key: [8]Vec = undefined;
             var half_big_key: if (third_approach) [8]HalfVec else void = undefined;
             for (0..8) |i| {
-                big_key[i] = splat(vec_len, key[i]);
+                big_key[i] = splat(max_vec_len, key[i]);
                 if (third_approach) {
-                    half_big_key[i] = splat(half_vec_len, key[i]);
+                    half_big_key[i] = splat(half_max_vec_len, key[i]);
                 }
             }
             const small_key = if (third_approach)
@@ -385,12 +386,14 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
             blake3.final(out);
         }
 
-        fn transposeBlocks(count: comptime_int, len: comptime_int, blocks_per_vec: comptime_int, vecs: [@divExact(16 * count, len)]V(len), out: *[16]V(count)) void {
+        /// Turns vectors, in which each element is in the same block,
+        /// into vectors, in which each element has the same offest to the start of different blocks.
+        fn transposeBlocks(count: comptime_int, vec_len: comptime_int, blocks_per_vec: comptime_int, vecs: [@divExact(16 * count, vec_len)]V(vec_len), out: *[16]V(count)) void {
             if (blocks_per_vec == count) {
                 // end of recursion; write vec to out
-                const len_or_16 = @min(len, 16);
-                if (len == count) {
-                    if (len < 4) {
+                const len_or_16 = @min(vec_len, 16);
+                if (vec_len == count) {
+                    if (vec_len < 4) {
                         out.* = vecs;
                     } else {
                         for (0..@divExact(16, len_or_16)) |i| {
@@ -400,295 +403,128 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                             }
                         }
                     }
-                } else if (count != 1 and (len == 2 * count or len == 4 * count)) {
+                } else if (count != 1 and (vec_len == 2 * count or vec_len == 4 * count)) {
                     for (0..@divExact(16, len_or_16)) |i| {
-                        for (0..@divExact(len_or_16 * count, len)) |j| {
-                            const vec = vecs[@divExact(len_or_16 * count, len) * i + j];
-                            inline for (0..@divExact(len, 2 * count)) |k| {
-                                out[len_or_16 * i + 0 + @divExact(len, 2 * count) * j + k] = std.simd.extract(vec, count * k, count);
-                                out[len_or_16 * i + @divExact(len_or_16, 2) + @divExact(len, 2 * count) * j + k] = std.simd.extract(vec, @divExact(len, 2) + count * k, count);
+                        for (0..@divExact(len_or_16 * count, vec_len)) |j| {
+                            const vec = vecs[@divExact(len_or_16 * count, vec_len) * i + j];
+                            inline for (0..@divExact(vec_len, 2 * count)) |k| {
+                                out[len_or_16 * i + 0 + @divExact(vec_len, 2 * count) * j + k] = std.simd.extract(vec, count * k, count);
+                                out[len_or_16 * i + @divExact(len_or_16, 2) + @divExact(vec_len, 2 * count) * j + k] = std.simd.extract(vec, @divExact(vec_len, 2) + count * k, count);
                             }
                         }
                     }
                 } else {
                     for (&vecs, 0..) |vec, i| {
-                        inline for (0..@divExact(len, count)) |j| {
-                            out[@divExact(len, count) * i + j] = if (count == 1) vec[j] else std.simd.extract(vec, count * j, count);
+                        inline for (0..@divExact(vec_len, count)) |j| {
+                            out[@divExact(vec_len, count) * i + j] = if (count == 1) vec[j] else std.simd.extract(vec, count * j, count);
                         }
                     }
                 }
             } else {
-                if (len < vec_len) {
-                    // This case makes the vectors of the next recursive step have double the amound of represented blocks, by using twice as large vectors.
-                    std.debug.assert(len >= 16);
+                if (vec_len < max_vec_len) {
+                    // This case makes the vectors of the next recursive step have double the amount of represented blocks, by using twice as large vectors.
+                    std.debug.assert(vec_len >= 16);
 
-                    const new_len = 2 * len;
+                    const new_len = 2 * vec_len;
                     var new_vecs: [@divExact(16 * count, new_len)]V(new_len) = undefined;
                     for (0..@divExact(16 * count, new_len)) |i| {
-                        new_vecs[i] = @shuffle(u32, vecs[2 * i + 0], vecs[2 * i + 1], repeatShuffleMask(2 * blocks_per_vec, @divExact(len, blocks_per_vec), std.simd.join(std.simd.iota(i32, blocks_per_vec), ~std.simd.iota(i32, blocks_per_vec)), blocks_per_vec, -blocks_per_vec));
+                        new_vecs[i] = @shuffle(u32, vecs[2 * i + 0], vecs[2 * i + 1], repeatShuffleMask(2 * blocks_per_vec, @divExact(vec_len, blocks_per_vec), std.simd.join(std.simd.iota(i32, blocks_per_vec), ~std.simd.iota(i32, blocks_per_vec)), blocks_per_vec, -blocks_per_vec));
                     }
 
                     transposeBlocks(count, new_len, 2 * blocks_per_vec, new_vecs, out);
                 } else {
-                    // This case makes the vectors of the next recursive step have double the amound of represented blocks, by having less values per block in each vector.
-                    var new_vecs: [@divExact(16 * count, len)]V(len) = undefined;
+                    // This case makes the vectors of the next recursive step have double the amount of represented blocks, by having less values per block in each vector.
+                    var new_vecs: [@divExact(16 * count, vec_len)]V(vec_len) = undefined;
                     for (0..@divExact(count, 2 * blocks_per_vec)) |i| {
-                        for (0..@divExact(16 * blocks_per_vec, len)) |j| {
+                        for (0..@divExact(16 * blocks_per_vec, vec_len)) |j| {
                             const zero_to_bpv = std.simd.iota(i32, blocks_per_vec);
-                            const low_mask = comptime repeatShuffleMask(2 * blocks_per_vec, @divExact(len, 2 * blocks_per_vec), std.simd.join(zero_to_bpv, ~zero_to_bpv), blocks_per_vec, -blocks_per_vec);
-                            const high_mask = comptime repeatShuffleMask(2 * blocks_per_vec, @divExact(len, 2 * blocks_per_vec), std.simd.join(
-                                @as(@Vector(blocks_per_vec, i32), @splat(@divExact(len, 2))) + zero_to_bpv,
-                                ~(@as(@Vector(blocks_per_vec, i32), @splat(@divExact(len, 2))) + zero_to_bpv),
+                            const low_mask = comptime repeatShuffleMask(2 * blocks_per_vec, @divExact(vec_len, 2 * blocks_per_vec), std.simd.join(zero_to_bpv, ~zero_to_bpv), blocks_per_vec, -blocks_per_vec);
+                            const high_mask = comptime repeatShuffleMask(2 * blocks_per_vec, @divExact(vec_len, 2 * blocks_per_vec), std.simd.join(
+                                @as(@Vector(blocks_per_vec, i32), @splat(@divExact(vec_len, 2))) + zero_to_bpv,
+                                ~(@as(@Vector(blocks_per_vec, i32), @splat(@divExact(vec_len, 2))) + zero_to_bpv),
                             ), blocks_per_vec, -blocks_per_vec);
 
-                            comptime var mask_0: @Vector(len, i32) = undefined;
-                            comptime var mask_1: @Vector(len, i32) = undefined;
+                            comptime var mask_0: @Vector(vec_len, i32) = undefined;
+                            comptime var mask_1: @Vector(vec_len, i32) = undefined;
 
-                            if (2 * blocks_per_vec == len) {
+                            if (2 * blocks_per_vec == vec_len) {
                                 mask_0 = low_mask;
                                 mask_1 = high_mask;
                             } else {
-                                mask_0 = comptime std.simd.join(std.simd.extract(low_mask, 0, @divExact(len, 2)), std.simd.extract(high_mask, 0, @divExact(len, 2)));
-                                mask_1 = comptime std.simd.join(std.simd.extract(low_mask, @divExact(len, 2), @divExact(len, 2)), std.simd.extract(high_mask, @divExact(len, 2), @divExact(len, 2)));
+                                mask_0 = comptime std.simd.join(std.simd.extract(low_mask, 0, @divExact(vec_len, 2)), std.simd.extract(high_mask, 0, @divExact(vec_len, 2)));
+                                mask_1 = comptime std.simd.join(std.simd.extract(low_mask, @divExact(vec_len, 2), @divExact(vec_len, 2)), std.simd.extract(high_mask, @divExact(vec_len, 2), @divExact(vec_len, 2)));
                             }
 
-                            new_vecs[2 * @divExact(16 * blocks_per_vec, len) * i + 2 * j + 0] = @shuffle(u32, vecs[2 * @divExact(16 * blocks_per_vec, len) * i + j], vecs[2 * @divExact(16 * blocks_per_vec, len) * i + j + @divExact(16 * blocks_per_vec, len)], mask_0);
-                            new_vecs[2 * @divExact(16 * blocks_per_vec, len) * i + 2 * j + 1] = @shuffle(u32, vecs[2 * @divExact(16 * blocks_per_vec, len) * i + j], vecs[2 * @divExact(16 * blocks_per_vec, len) * i + j + @divExact(16 * blocks_per_vec, len)], mask_1);
+                            new_vecs[2 * @divExact(16 * blocks_per_vec, vec_len) * i + 2 * j + 0] = @shuffle(u32, vecs[2 * @divExact(16 * blocks_per_vec, vec_len) * i + j], vecs[2 * @divExact(16 * blocks_per_vec, vec_len) * i + j + @divExact(16 * blocks_per_vec, vec_len)], mask_0);
+                            new_vecs[2 * @divExact(16 * blocks_per_vec, vec_len) * i + 2 * j + 1] = @shuffle(u32, vecs[2 * @divExact(16 * blocks_per_vec, vec_len) * i + j], vecs[2 * @divExact(16 * blocks_per_vec, vec_len) * i + j + @divExact(16 * blocks_per_vec, vec_len)], mask_1);
                         }
                     }
-                    transposeBlocks(count, len, 2 * blocks_per_vec, new_vecs, out);
+                    transposeBlocks(count, vec_len, 2 * blocks_per_vec, new_vecs, out);
                 }
             }
         }
 
+        /// Reads count blocks that have an offset of t_inc chunks to each other into vectors that can be used by compress2.
+        /// half_half reorders the input to require less steps when compress3 is used.
+
+        // inline has significant performance advantage.
         inline fn blocksToVectors2(count: comptime_int, input: [*]const u8, t_inc: usize, comptime half_half: bool, out: *[16]V(count)) void {
-            // @setEvalBranchQuota(80000);
-            //
-            const new = true;
+            const vec_len = @min(16, max_vec_len);
+            var ordered_vecs: [count * @divExact(16, vec_len)]V(vec_len) = undefined;
 
-            if (new) {
-                const len = @min(16, vec_len);
-                var ordered_vecs: [count * @divExact(16, len)]V(len) = undefined;
+            blocksToVectors(vec_len, count, input, t_inc, &ordered_vecs);
 
-                blocksToVectors(len, count, input, t_inc, &ordered_vecs);
-
-                var reordered_vecs: [count * @divExact(16, len)]V(len) = undefined;
-                if (half_half) {
-                    for (0..@divExact(count, 2)) |i| {
-                        for (0..@divExact(16, len)) |j| {
-                            // reordered_vecs[i/@divExact(count,2)]
-                            reordered_vecs[@divExact(16, len) * i + j] = ordered_vecs[(2 * i + 0) * @divExact(16, len) + j];
-                            reordered_vecs[@divExact(16, len) * (i + @divExact(count, 2)) + j] = ordered_vecs[(2 * i + 1) * @divExact(16, len) + j];
-                        }
+            var reordered_vecs: [count * @divExact(16, vec_len)]V(vec_len) = undefined;
+            if (half_half) {
+                for (0..@divExact(count, 2)) |i| {
+                    for (0..@divExact(16, vec_len)) |j| {
+                        reordered_vecs[@divExact(16, vec_len) * i + j] = ordered_vecs[(2 * i + 0) * @divExact(16, vec_len) + j];
+                        reordered_vecs[@divExact(16, vec_len) * (i + @divExact(count, 2)) + j] = ordered_vecs[(2 * i + 1) * @divExact(16, vec_len) + j];
                     }
-                } else {
-                    reordered_vecs = ordered_vecs;
                 }
-
-                // std.debug.print("reordered: {x}\n", .{reordered_vecs});
-
-                // var new_out: [16]V(count) = undefined;
-
-                // std.debug.print("{}\n", .{vec_len});
-
-                transposeBlocks(count, len, 1, reordered_vecs, out);
             } else {
-
-                // old
-                // // 16 :@setEvalBranchQuota(1031);
-                // // 32: @setEvalBranchQuota(1578);
-                // // @setEvalBranchQuota(2624);
-                // // @setEvalBranchQuota(500 + 34 * count);
-                // // if (count != 64) return;
-                // // @compileLog(count);
-                // // @setEvalBranchQuota(20000);
-
-                // @compileLog(count);
-
-                // 16: @setEvalBranchQuota(1031);
-                // 32: @setEvalBranchQuota(1578);
-                // 64: @setEvalBranchQuota(2624);
-                // 128 @setEvalBranchQuota(4716);
-                // @setEvalBranchQuota(8924);
-                @setEvalBranchQuota(80924);
-                //
-                comptime var vecs_per_row = @divExact(16, @min(count, 16));
-                comptime var vecs_per_column = @divExact(16, vecs_per_row);
-                //
-                // var ordered_vecs: [count * vecs_per_row]V(@min(count, 16)) = undefined;
-                //
-                // blocksToVectors(@min(count, 16), count, input, t_inc, &ordered_vecs);
-                //
-                // var reordered_vecs: [count * vecs_per_row]V(@min(count, 16)) = undefined;
-                // if (half_half) {
-                //     for (0..@divExact(count, 2)) |i| {
-                //         for (0..vecs_per_row) |j| {
-                //             // reordered_vecs[i/@divExact(count,2)]
-                //             reordered_vecs[vecs_per_row * i + j] = ordered_vecs[(2 * i + 0) * vecs_per_row + j];
-                //             reordered_vecs[vecs_per_row * (i + @divExact(count, 2)) + j] = ordered_vecs[(2 * i + 1) * vecs_per_row + j];
-                //         }
-                //     }
-                // } else {
-                //     reordered_vecs = ordered_vecs;
-                // }
-                // // std.debug.print("{x}\n", .{reordered_vecs});
-                // // var vecs: [16]V(count) = joinVecs(count * vecs_per_row, @min(count, 16), reordered_vecs, count);
-                //
-                var vecs: [16]V(count) = undefined;
-
-                for (0..vecs_per_column) |i| {
-                    for (0..@divExact(count, vecs_per_column)) |j| {
-                        var t_offset = i * @divExact(count, vecs_per_column) + j;
-                        if (half_half) {
-                            t_offset = 2 * (t_offset % @divExact(count, 2)) + t_offset / @divExact(count, 2);
-                        }
-
-                        for (0..vecs_per_row) |k| {
-                            for (0..@divExact(16, vecs_per_row)) |l| {
-                                index(count, &vecs[vecs_per_row * i + k], @divExact(count, vecs_per_column) * l + j).* =
-                                    @bitCast(input[CHUNK_LEN * (t_inc * t_offset) + 4 * (k * @divExact(16, vecs_per_row) + l) ..][0..4].*);
-                            }
-                        }
-                    }
-                }
-
-                if (builtin.cpu.arch.endian() == .big) {
-                    for (0..16) |i| {
-                        vecs[i] = @byteSwap(vecs[i]);
-                    }
-                }
-
-                // const n_vecs = joinVecs(count * vecs_per_row, @min(count, 16), reordered_vecs, count);
-                //
-                // for (&vecs, &n_vecs) |v, n| {
-                //     if ((count == 1 and v != n) or (count != 1 and @reduce(.Or, v != n))) {
-                //         std.debug.print("old: {x}\n", .{vecs});
-                //         std.debug.print("new: {x}\n", .{n_vecs});
-                //         std.debug.print("new_reordered: {x}\n", .{reordered_vecs});
-                //         std.debug.print("h: {}\n", .{half_half});
-                //         @panic("panic!!!");
-                //     }
-                // }
-
-                // leave at V((count, 16))
-                // then transpose first until V()
-
-                inline while (vecs_per_column != 1) : ({
-                    vecs_per_column = @divExact(vecs_per_column, 2);
-                    vecs_per_row *= 2;
-                }) {
-                    var new_vecs: [16]V(count) = undefined;
-
-                    const columns_per_vec = @divExact(count, vecs_per_column);
-                    const first_column_mask_0 = std.simd.iota(i32, columns_per_vec);
-                    comptime var mask_0 = repeatShuffleMask(
-                        2 * columns_per_vec,
-                        @divExact(8, vecs_per_row),
-                        std.simd.join(first_column_mask_0, ~first_column_mask_0),
-                        columns_per_vec,
-                        -columns_per_vec,
-                    );
-                    const first_column_mask_1 = @as(@Vector(columns_per_vec, i32), @splat(@divExact(count, 2))) + first_column_mask_0;
-                    comptime var mask_1 = repeatShuffleMask(
-                        2 * columns_per_vec,
-                        @divExact(8, vecs_per_row),
-                        std.simd.join(first_column_mask_1, ~first_column_mask_1),
-                        columns_per_vec,
-                        -columns_per_vec,
-                    );
-
-                    comptime var vec_1_offset = 1;
-
-                    if (vecs_per_column > 2) {
-                        const mask_0_begin = comptime std.simd.extract(mask_0, 0, @divExact(count, 2));
-                        const mask_0_end = comptime std.simd.extract(mask_1, 0, @divExact(count, 2));
-                        const mask_1_begin = comptime std.simd.extract(mask_0, @divExact(count, 2), @divExact(count, 2));
-                        const mask_1_end = comptime std.simd.extract(mask_1, @divExact(count, 2), @divExact(count, 2));
-                        mask_0 = comptime std.simd.join(mask_0_begin, mask_0_end);
-                        mask_1 = comptime std.simd.join(mask_1_begin, mask_1_end);
-                    } else {
-                        vec_1_offset = @min(@divExact(count, 2), 8);
-                    }
-
-                    for (0..@divExact(vecs_per_column, 2)) |i| {
-                        for (0..@divExact(vecs_per_row, vec_1_offset)) |j| {
-                            for (0..vec_1_offset) |k| {
-                                const vec_0 = vecs[vecs_per_row * (2 * i + 0) + vec_1_offset * j + k];
-                                const vec_1 = vecs[vecs_per_row * (2 * i + 1) + vec_1_offset * j + k];
-
-                                new_vecs[2 * vecs_per_row * i + (j * 2 + 0) * vec_1_offset + k] = @shuffle(u32, vec_0, vec_1, mask_0);
-                                new_vecs[2 * vecs_per_row * i + (j * 2 + 1) * vec_1_offset + k] = @shuffle(u32, vec_0, vec_1, mask_1);
-                            }
-                        }
-                    }
-                    vecs = new_vecs;
-                }
-                comptime std.debug.assert(vecs_per_row == 16);
-
-                out.* = vecs;
+                reordered_vecs = ordered_vecs;
             }
-            //
-            // for (out, &new_out) |v, n| {
-            //     if ((count == 1 and v != n) or (count != 1 and @reduce(.Or, v != n))) {
-            //         std.debug.print("old: {x}\n", .{out.*});
-            //         std.debug.print("new: {x}\n", .{new_out});
-            //         std.debug.print("new_reordered: {x}\n", .{reordered_vecs});
-            //         std.debug.print("h: {}\n", .{half_half});
-            //         @panic("panic!!!");
-            //     }
-            // }
-
-            // @compileLog("ja");
+            transposeBlocks(count, vec_len, 1, reordered_vecs, out);
         }
 
+        /// Reads count blocks that have an offset of t_inc chunks to each other into vectors that can be used by compress3.
         fn blocksToVectors3(count: comptime_int, input: [*]const u8, t_inc: usize, out: *[4]V(4 * count)) void {
-            const len = @min(vec_len, 16);
+            const vec_len = @min(max_vec_len, 16);
 
-            var vecs: [count * @divExact(16, len)]V(len) = undefined;
-            // for (0..count) |i| {
-            //     for (0..vecs_per_block) |j| {
-            //         for (0..len) |k| {
-            //             vecs[vecs_per_block * i + j][k] = @bitCast(input[CHUNK_LEN * (t_inc * i) + 4 * len * j + 4 * k ..][0..4].*);
-            //         }
-            //     }
-            // }
-            // if (builtin.cpu.arch.endian() == .big) {
-            //     for (&vecs) |*vec| {
-            //         vec.* = @byteSwap(vec.*);
-            //     }
-            // }
+            var vecs: [count * @divExact(16, vec_len)]V(vec_len) = undefined;
 
-            blocksToVectors(len, count, input, t_inc, &vecs);
+            blocksToVectors(vec_len, count, input, t_inc, &vecs);
 
-            if (len == 4 and count == 1) {
+            if (vec_len == 4 and count == 1) {
                 out.* = .{
                     @shuffle(u32, vecs[0], vecs[1], [_]i32{ 0, 2, ~@as(i32, 0), ~@as(i32, 2) }),
                     @shuffle(u32, vecs[0], vecs[1], [_]i32{ 1, 3, ~@as(i32, 1), ~@as(i32, 3) }),
                     @shuffle(u32, vecs[2], vecs[3], [_]i32{ ~@as(i32, 2), 0, 2, ~@as(i32, 0) }),
                     @shuffle(u32, vecs[2], vecs[3], [_]i32{ ~@as(i32, 3), 1, 3, ~@as(i32, 1) }),
                 };
-            } else if (len == 8 and count == 1) {
+            } else if (vec_len == 8 and count == 1) {
                 out.* = .{
                     @shuffle(u32, vecs[0], undefined, [_]i32{ 0, 2, 4, 6 }),
                     @shuffle(u32, vecs[0], undefined, [_]i32{ 1, 3, 5, 7 }),
                     @shuffle(u32, vecs[1], undefined, [_]i32{ 6, 0, 2, 4 }),
                     @shuffle(u32, vecs[1], undefined, [_]i32{ 7, 1, 3, 5 }),
                 };
-            } else if (len == 8 and count == 2) {
+            } else if (vec_len == 8 and count == 2) {
                 out.* = .{
                     @shuffle(u32, vecs[0], vecs[2], [_]i32{ 0, 2, 4, 6, ~@as(i32, 0), ~@as(i32, 2), ~@as(i32, 4), ~@as(i32, 6) }),
                     @shuffle(u32, vecs[0], vecs[2], [_]i32{ 1, 3, 5, 7, ~@as(i32, 1), ~@as(i32, 3), ~@as(i32, 5), ~@as(i32, 7) }),
                     @shuffle(u32, vecs[1], vecs[3], [_]i32{ 6, 0, 2, 4, ~@as(i32, 6), ~@as(i32, 0), ~@as(i32, 2), ~@as(i32, 4) }),
                     @shuffle(u32, vecs[1], vecs[3], [_]i32{ 7, 1, 3, 5, ~@as(i32, 7), ~@as(i32, 1), ~@as(i32, 3), ~@as(i32, 5) }),
                 };
-            } else if (len == 16 and count == 1) {
+            } else if (vec_len == 16 and count == 1) {
                 out.* = .{
                     @shuffle(u32, vecs[0], undefined, [_]i32{ 0, 2, 4, 6 }),
                     @shuffle(u32, vecs[0], undefined, [_]i32{ 1, 3, 5, 7 }),
                     @shuffle(u32, vecs[0], undefined, [_]i32{ 14, 8, 10, 12 }),
                     @shuffle(u32, vecs[0], undefined, [_]i32{ 15, 9, 11, 13 }),
                 };
-            } else if (len == 16 and count == 2) {
+            } else if (vec_len == 16 and count == 2) {
                 out.* = .{
                     @shuffle(u32, vecs[0], vecs[1], [_]i32{ 0, 2, 4, 6, ~@as(i32, 0), ~@as(i32, 2), ~@as(i32, 4), ~@as(i32, 6) }),
                     @shuffle(u32, vecs[0], vecs[1], [_]i32{ 1, 3, 5, 7, ~@as(i32, 1), ~@as(i32, 3), ~@as(i32, 5), ~@as(i32, 7) }),
@@ -697,7 +533,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                 };
             } else {
                 comptime std.debug.assert(count >= 4);
-                comptime std.debug.assert(len == 16);
+                comptime std.debug.assert(vec_len == 16);
 
                 var joined_vecs: [4]V(4 * count) = joinVecs(count, 16, vecs, 4 * count);
                 for (&joined_vecs) |*vec| {
@@ -726,6 +562,8 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
             }
         }
 
+        /// Compresses count chunks using compress2.
+        /// half_half reorders the input to require less steps when compress3 is used.
         fn compressChunks2(
             count: comptime_int,
             input: [*]const u8,
@@ -733,7 +571,6 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
             t_inc: usize,
             key: *const [8]V(count),
             flags: u32,
-            comptime mod_2_output_order: bool,
             comptime half_half: bool,
             out: *[8]V(count),
         ) void {
@@ -764,7 +601,6 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
 
             inline for (0..(CHUNK_LEN / BLOCK_LEN)) |i| {
                 var m: [16]CountVec = undefined;
-                // @call(.always_inline, blocksToVectors2, .{ count, input[i * BLOCK_LEN ..], t_inc, half_half, &m });
                 blocksToVectors2(count, input[i * BLOCK_LEN ..], t_inc, half_half, &m);
 
                 compress2(
@@ -781,7 +617,6 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                     else
                         flags,
                     true,
-                    mod_2_output_order and i == 15,
                     if (i == 15)
                         out
                     else
@@ -805,6 +640,8 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                         true,
                         &out,
                     );
+
+                    // These shuffles allow to use compress3 in the next merge
                     if (self.cv_stack_len == stack_len_target + 1) {
                         self.cv_stack[elements_per_8 * (self.cv_stack_len - 2) + 0] = @shuffle(u32, out[0], out[1], [_]i32{ 0, 2, ~@as(i32, 0), ~@as(i32, 2) });
                         self.cv_stack[elements_per_8 * (self.cv_stack_len - 2) + 1] = @shuffle(u32, out[0], out[1], [_]i32{ 1, 3, ~@as(i32, 1), ~@as(i32, 3) });
@@ -822,7 +659,6 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                         BLOCK_LEN,
                         self.flags | PARENT,
                         true,
-                        false,
                         self.cv_stack[elements_per_8 * (self.cv_stack_len - 2) ..][0..elements_per_8],
                     );
                 }
@@ -873,7 +709,6 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                     BLOCK_LEN,
                     self.flags | self.startFlag() | if (self.chunk_state_len == CHUNK_LEN) CHUNK_END else 0,
                     true,
-                    false,
                     output,
                 );
             }
@@ -936,6 +771,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
             }
 
             while (input.len > CHUNK_LEN) {
+                // In each step of this loop a subtree of chunks is compressed. The amount of chunks has to be less than the length of input in chunks, a power of 2 and a divisor of the self.t if self.t is not 0.
                 const subtree_chunks_log_upper_bound = std.math.log2_int(usize, input.len) - CHUNK_LEN_LOG;
                 const subtree_chunks_log: std.math.Log2Int(usize) = if (self.t == 0)
                     subtree_chunks_log_upper_bound
@@ -943,6 +779,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                     @min(subtree_chunks_log_upper_bound, @ctz(self.t));
 
                 if (subtree_chunks_log == 0) {
+                    // Compressing single chunk:
                     var out: [elements_per_8]Element = undefined;
 
                     if (third_approach) {
@@ -956,13 +793,14 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                             out[1] = @shuffle(u32, compress3_output[0], compress3_output[1], [_]i32{ ~@as(i32, 3), 1, 3, ~@as(i32, 1) });
                         }
                     } else {
-                        compressChunks2(1, input.ptr, self.t, undefined, &self.key, self.flags, false, false, &out);
+                        compressChunks2(1, input.ptr, self.t, undefined, &self.key, self.flags, false, &out);
                     }
 
                     self.pushCV(out, self.t);
                     self.t += 1;
                     input = input[CHUNK_LEN..];
                 } else {
+                    // Compressing multiple chunks:
                     const subtree_chunks = @as(usize, 1) << subtree_chunks_log;
 
                     var subtree_children: [2 * elements_per_8]Element = undefined;
@@ -980,7 +818,8 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
             }
         }
 
-        fn rootComprssion(self: *const Self, h: *[elements_per_8]Element, m: *[2 * elements_per_8]Element, b: *u32, d: *u32) void {
+        /// Merges the cv_stack except the root, which gets compressed in final.
+        fn prepareRootComprssion(self: *const Self, h: *[elements_per_8]Element, m: *[2 * elements_per_8]Element, b: *u32, d: *u32) void {
             var cvs_remaining = self.cv_stack_len;
             var t: u64 = undefined;
             if (self.chunk_state_len != 0 or self.cv_stack_len == 0) {
@@ -1027,7 +866,6 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                         b.*,
                         d.*,
                         true,
-                        false,
                         m[elements_per_8 .. 2 * elements_per_8],
                     );
                 }
@@ -1048,7 +886,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
             var m: [2 * elements_per_8]Element = undefined;
             var b: u32 = undefined;
             var d: u32 = undefined;
-            self.rootComprssion(&h, &m, &b, &d);
+            self.prepareRootComprssion(&h, &m, &b, &d);
 
             var t: u64 = 0;
 
@@ -1081,7 +919,6 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                         b,
                         d,
                         false,
-                        false,
                         &lil_endian_out,
                     );
                     for (0..16) |i| {
@@ -1096,16 +933,18 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
             }
         }
 
+        /// Compresses a full subtree of more than one chunk, except the root of the subtree.
         fn compressTwoSubtrees(self: *const Self, input: []const u8, out: *[2 * elements_per_8]Element) void {
             if (third_approach) {
                 const chunk_count_log = @ctz(input.len) - CHUNK_LEN_LOG;
 
-                if (vec_len_log > 2) {
-                    @setEvalBranchQuota(16 * vec_len + 31 * @as(u32, vec_len_log) - 52);
+                if (max_vec_len_log > 2) {
+                    @setEvalBranchQuota(16 * max_vec_len + 31 * @as(u32, max_vec_len_log) - 52);
 
                     switch (chunk_count_log) {
                         0 => unreachable,
-                        inline 1...vec_len_log - 2 => |count_log| {
+                        inline 1...max_vec_len_log - 2 => |count_log| {
+                            // Third approach if input is small enough to directly use compress3
                             const count = 1 << count_log;
                             var compress3_output: [2]V(4 * count) = undefined;
                             compressChunks3(count, input[0 .. CHUNK_LEN * count], self.t, &self.key, self.flags, &compress3_output);
@@ -1124,16 +963,16 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                     }
                 }
 
+                // Second approach, otherwise
                 var compress2_output: [8]HalfVec = undefined;
-                if (chunk_count_log == vec_len_log - 1) {
+                if (chunk_count_log == max_vec_len_log - 1) {
                     compressChunks2(
-                        half_vec_len,
+                        half_max_vec_len,
                         input.ptr,
                         self.t,
                         1,
                         &self.half_big_key,
                         self.flags,
-                        true,
                         false,
                         &compress2_output,
                     );
@@ -1145,32 +984,31 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                     var m: [16]HalfVec = undefined;
 
                     for (0..8) |i| {
-                        m[i] = std.simd.extract(first_compress2_output[i], 0, half_vec_len);
-                        m[8 + i] = std.simd.extract(first_compress2_output[i], half_vec_len, half_vec_len);
+                        m[i] = std.simd.extract(first_compress2_output[i], 0, half_max_vec_len);
+                        m[8 + i] = std.simd.extract(first_compress2_output[i], half_max_vec_len, half_max_vec_len);
                     }
 
                     compress2(
-                        half_vec_len,
+                        half_max_vec_len,
                         self.half_big_key,
                         &m,
-                        splat(half_vec_len, 0),
-                        splat(half_vec_len, 0),
+                        splat(half_max_vec_len, 0),
+                        splat(half_max_vec_len, 0),
                         BLOCK_LEN,
                         self.flags | PARENT,
-                        true,
                         true,
                         &compress2_output,
                     );
                 }
 
                 const m = [4]Vec{
-                    @shuffle(u32, std.simd.join(compress2_output[0], compress2_output[1]), std.simd.join(compress2_output[2], compress2_output[3]), repeatShuffleMask(4, @divExact(vec_len, 4), [_]i32{ 0, half_vec_len + 0, ~@as(i32, 0), ~@as(i32, half_vec_len + 0) }, 2, -2)),
-                    @shuffle(u32, std.simd.join(compress2_output[4], compress2_output[5]), std.simd.join(compress2_output[6], compress2_output[7]), repeatShuffleMask(4, @divExact(vec_len, 4), [_]i32{ 0, half_vec_len + 0, ~@as(i32, 0), ~@as(i32, half_vec_len + 0) }, 2, -2)),
-                    @shuffle(u32, std.simd.join(compress2_output[0], compress2_output[1]), std.simd.join(compress2_output[2], compress2_output[3]), repeatShuffleMask(4, @divExact(vec_len, 4), [_]i32{ ~@as(i32, half_vec_len + 1), 1, half_vec_len + 1, ~@as(i32, 1) }, 2, -2)),
-                    @shuffle(u32, std.simd.join(compress2_output[4], compress2_output[5]), std.simd.join(compress2_output[6], compress2_output[7]), repeatShuffleMask(4, @divExact(vec_len, 4), [_]i32{ ~@as(i32, half_vec_len + 1), 1, half_vec_len + 1, ~@as(i32, 1) }, 2, -2)),
+                    @shuffle(u32, std.simd.join(compress2_output[0], compress2_output[2]), std.simd.join(compress2_output[4], compress2_output[6]), repeatShuffleMask(4, @divExact(max_vec_len, 4), [_]i32{ 0, half_max_vec_len + 0, ~@as(i32, 0), ~@as(i32, half_max_vec_len + 0) }, 2, -2)),
+                    @shuffle(u32, std.simd.join(compress2_output[1], compress2_output[3]), std.simd.join(compress2_output[5], compress2_output[7]), repeatShuffleMask(4, @divExact(max_vec_len, 4), [_]i32{ 0, half_max_vec_len + 0, ~@as(i32, 0), ~@as(i32, half_max_vec_len + 0) }, 2, -2)),
+                    @shuffle(u32, std.simd.join(compress2_output[0], compress2_output[2]), std.simd.join(compress2_output[4], compress2_output[6]), repeatShuffleMask(4, @divExact(max_vec_len, 4), [_]i32{ ~@as(i32, half_max_vec_len + 1), 1, half_max_vec_len + 1, ~@as(i32, 1) }, 2, -2)),
+                    @shuffle(u32, std.simd.join(compress2_output[1], compress2_output[3]), std.simd.join(compress2_output[5], compress2_output[7]), repeatShuffleMask(4, @divExact(max_vec_len, 4), [_]i32{ ~@as(i32, half_max_vec_len + 1), 1, half_max_vec_len + 1, ~@as(i32, 1) }, 2, -2)),
                 };
-                self.compressParentsRecursive3(@divExact(vec_len, 4), m, out);
-            } else if (vec_len == 2) {
+                self.compressParentsRecursive3(@divExact(max_vec_len, 4), m, out);
+            } else if (max_vec_len == 2) {
                 var compress2_output: [8]Vec = undefined;
                 self.compressSubtrees2(input, self.t, false, &compress2_output);
                 for (0..2) |i| {
@@ -1178,7 +1016,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                         out[8 * i + j] = compress2_output[j][i];
                     }
                 }
-            } else if (vec_len == 1) {
+            } else if (max_vec_len == 1) {
                 const half = @divExact(input.len, 2);
                 const half_chunks = @divExact(half, CHUNK_LEN);
                 // TODO: Multithreading
@@ -1187,18 +1025,19 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
             } else comptime unreachable;
         }
 
+        /// Compresses a full subtree using compress2.
+        /// half_half reorders the input to require less steps when compress3 is used.
         fn compressSubtrees2(self: *const Self, input: []const u8, t: u64, comptime half_half: bool, out: *[8]Vec) void {
-            const chunks_per_splitted_subtree = @divExact(input.len, vec_len * CHUNK_LEN);
+            const chunks_per_splitted_subtree = @divExact(input.len, max_vec_len * CHUNK_LEN);
 
             if (chunks_per_splitted_subtree == 1) {
                 compressChunks2(
-                    vec_len,
+                    max_vec_len,
                     input.ptr,
                     t,
                     1,
                     &self.big_key,
                     self.flags,
-                    false,
                     half_half,
                     out,
                 );
@@ -1214,6 +1053,8 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
             }
         }
 
+        /// Compresses a full subtree of more than one chunk using compress2 by recursively compressing both childs and compressing the outputs.
+        /// half_half reorders the input to require less steps when compress3 is used.
         fn compressSubtreesRecursive2(self: *const Self, input: [*]const u8, child_chunks: usize, t: u64, t_inc: usize, comptime half_half: bool, out: *[8]Vec) void {
             var uncompressed_output: [16]Vec = undefined;
 
@@ -1222,8 +1063,8 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
 
             if (child_chunks == 1) {
                 // TODO: Multithreading
-                compressChunks2(vec_len, input, t, t_inc, &self.big_key, self.flags, false, half_half, uncompressed_output[0..8]);
-                compressChunks2(vec_len, right_input, right_t, t_inc, &self.big_key, self.flags, false, half_half, uncompressed_output[8..16]);
+                compressChunks2(max_vec_len, input, t, t_inc, &self.big_key, self.flags, half_half, uncompressed_output[0..8]);
+                compressChunks2(max_vec_len, right_input, right_t, t_inc, &self.big_key, self.flags, half_half, uncompressed_output[8..16]);
             } else {
                 const child_child_chunks = @divExact(child_chunks, 2);
                 // TODO: Multithreading
@@ -1232,19 +1073,19 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
             }
 
             compress2(
-                vec_len,
+                max_vec_len,
                 self.big_key,
                 &uncompressed_output,
-                splat(vec_len, 0),
-                splat(vec_len, 0),
+                splat(max_vec_len, 0),
+                splat(max_vec_len, 0),
                 BLOCK_LEN,
                 self.flags | PARENT,
                 true,
-                false,
                 out,
             );
         }
 
+        /// Compresses count chunks using compress3.
         fn compressChunks3(
             count: comptime_int,
             input: *const [CHUNK_LEN * count]u8,
@@ -1286,6 +1127,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
             }
         }
 
+        /// Compress m using compress3, except the root.
         fn compressParentsRecursive3(
             self: *const Self,
             count: comptime_int,
@@ -1332,6 +1174,8 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
         }
     };
 }
+
+// Test
 
 fn stringToBytes(str: *const [262]u8) [131]u8 {
     var bytes: [131]u8 = undefined;
@@ -1621,14 +1465,3 @@ test "blake3 matrix" {
         }
     }
 }
-
-// test "fuzz" {
-//     const in = std.testing.fuzzInput(.{});
-//     var hash_0: [131]u8 = undefined;
-//     std.crypto.hash.Blake3.hash(in, &hash_0, .{});
-//
-//     var hash_1: [131]u8 = undefined;
-//     Blake3(.{}).hash(in, &hash_1, .{});
-//
-//     try std.testing.expectEqualSlices(u8, &hash_0, &hash_1);
-// }
