@@ -304,7 +304,6 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                 hash,
                 keyed_hash: [32]u8,
                 derive_key: []const u8,
-                derive_key_using_context_hash: [32]u8,
             } = .hash,
         };
 
@@ -345,44 +344,35 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
         }
 
         pub fn init(options: Options) Self {
-            return initInternal(
-                switch (options.mode) {
-                    .hash => IV_CONSTANTS,
-                    .keyed_hash, .derive_key_using_context_hash => |key| blk: {
-                        var key_words: [8]u32 = undefined;
-                        for (0..8) |i| {
-                            key_words[i] = std.mem.readInt(u32, key[4 * i ..][0..4], .little);
-                        }
-                        break :blk key_words;
-                    },
-                    .derive_key => |ctx| blk: {
-                        var ctx_hash: [32]u8 = undefined;
-                        hashKeyContext(ctx, &ctx_hash);
+            return blk: switch (options.mode) {
+                .hash => initInternal(IV_CONSTANTS, 0),
+                .keyed_hash => |key| {
+                    var key_words: [8]u32 = undefined;
+                    for (0..8) |i| {
+                        key_words[i] = std.mem.readInt(u32, key[4 * i ..][0..4], .little);
+                    }
 
-                        var key_words: [8]u32 = undefined;
-                        for (0..8) |i| {
-                            key_words[i] = std.mem.readInt(u32, ctx_hash[4 * i ..][0..4], .little);
-                        }
-                        break :blk key_words;
-                    },
+                    break :blk initInternal(key_words, KEYED_HASH);
                 },
-                switch (options.mode) {
-                    .hash => 0,
-                    .keyed_hash => KEYED_HASH,
-                    .derive_key, .derive_key_using_context_hash => DERIVE_KEY_MATERIAL,
+                .derive_key => |ctx| {
+                    var blake3 = initInternal(IV_CONSTANTS, DERIVE_KEY_CONTEXT);
+                    blake3.update(ctx);
+
+                    var ctx_hash: [32]u8 = undefined;
+                    blake3.final(&ctx_hash);
+
+                    var key_words: [8]u32 = undefined;
+                    for (0..8) |i| {
+                        key_words[i] = std.mem.readInt(u32, ctx_hash[4 * i ..][0..4], .little);
+                    }
+                    break :blk initInternal(key_words, DERIVE_KEY_MATERIAL);
                 },
-            );
+            };
         }
 
         pub fn hash(input: []const u8, out: []u8, options: Options) void {
             var blake3 = init(options);
             blake3.update(input);
-            blake3.final(out);
-        }
-
-        pub fn hashKeyContext(context: []const u8, out: *[32]u8) void {
-            var blake3 = initInternal(IV_CONSTANTS, DERIVE_KEY_CONTEXT);
-            blake3.update(context);
             blake3.final(out);
         }
 
@@ -465,7 +455,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
         }
 
         /// Reads count blocks that have an offset of t_inc chunks to each other into vectors that can be used by compress2.
-        /// half_half reorders the input to require less steps when compress3 is used.
+        /// half_half reorders the input to require less steps when reusing the output as an input.
 
         // inline has significant performance advantage.
         inline fn blocksToVectors2(count: comptime_int, input: [*]const u8, t_inc: usize, comptime half_half: bool, out: *[16]V(count)) void {
@@ -563,7 +553,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
         }
 
         /// Compresses count chunks using compress2.
-        /// half_half reorders the input to require less steps when compress3 is used.
+        /// half_half reorders the input to require less steps when reusing the output as an input.
         fn compressChunks2(
             count: comptime_int,
             input: [*]const u8,
@@ -1026,7 +1016,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
         }
 
         /// Compresses a full subtree using compress2.
-        /// half_half reorders the input to require less steps when compress3 is used.
+        /// half_half reorders the input to require less steps when reusing the output as an input.
         fn compressSubtrees2(self: *const Self, input: []const u8, t: u64, comptime half_half: bool, out: *[8]Vec) void {
             const chunks_per_splitted_subtree = @divExact(input.len, max_vec_len * CHUNK_LEN);
 
@@ -1054,7 +1044,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
         }
 
         /// Compresses a full subtree of more than one chunk using compress2 by recursively compressing both childs and compressing the outputs.
-        /// half_half reorders the input to require less steps when compress3 is used.
+        /// half_half reorders the input to require less steps when reusing the output as an input.
         fn compressSubtreesRecursive2(self: *const Self, input: [*]const u8, child_chunks: usize, t: u64, t_inc: usize, comptime half_half: bool, out: *[8]Vec) void {
             var uncompressed_output: [16]Vec = undefined;
 
@@ -1185,7 +1175,7 @@ fn stringToBytes(str: *const [262]u8) [131]u8 {
     return bytes;
 }
 
-test "blake3 matrix" {
+test "BLAKE3 reference test cases" {
     const exprected = [_]struct {
         input_len: usize,
         hash: [131]u8,
@@ -1427,14 +1417,11 @@ test "blake3 matrix" {
     inline for (vec_lens) |vec_len| {
         const B3 = Blake3(.{ .vector_length = vec_len });
 
-        var context: [32]u8 = undefined;
-        B3.hashKeyContext(context_string, &context);
-
         for (exprected) |exp| {
             for (partitions) |partition| {
                 var b3 = B3.init(.{});
                 var b3_keyed = B3.init(.{ .mode = .{ .keyed_hash = key } });
-                var b3_derive_key = B3.init(.{ .mode = .{ .derive_key_using_context_hash = context } });
+                var b3_derive_key = B3.init(.{ .mode = .{ .derive_key = context_string } });
 
                 const part_bit_len = exp.input_len / partition[partition.len - 1];
 
