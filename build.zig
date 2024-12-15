@@ -46,6 +46,11 @@ pub fn build(b: *std.Build) !void {
     }
 
     const c_path = b.dependency("blake3", .{}).path("c");
+    const translate_header = b.addTranslateC(.{
+        .root_source_file = c_path.path(b, "blake3.h"),
+        .target = target,
+        .optimize = optimize,
+    }).createModule();
 
     if (target.result.cpu.arch == .x86_64) {
         const exe = b.addExecutable(.{
@@ -55,7 +60,7 @@ pub fn build(b: *std.Build) !void {
             .optimize = optimize,
         });
 
-        exe.addSystemIncludePath(c_path);
+        exe.root_module.addImport("c-blake3", translate_header);
 
         var files: std.ArrayList([]const u8) = .init(b.allocator);
         defer files.deinit();
@@ -129,7 +134,7 @@ pub fn build(b: *std.Build) !void {
             .optimize = optimize,
         });
 
-        exe.addSystemIncludePath(c_path);
+        exe.root_module.addImport("c-blake3", translate_header);
 
         var files: std.ArrayList([]const u8) = .init(b.allocator);
         defer files.deinit();

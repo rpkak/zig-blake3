@@ -1,9 +1,7 @@
 const std = @import("std");
 const config = @import("config");
 const blake3 = @import("./root.zig");
-const c = @cImport({
-    @cInclude("blake3.h");
-});
+const cblake3 = @import("c-blake3");
 
 fn run() !void {
     const stdout = std.io.getStdOut();
@@ -22,10 +20,10 @@ fn run() !void {
 
     std.valgrind.callgrind.startInstrumentation();
     if (config.c) {
-        var hasher: c.blake3_hasher = undefined;
-        c.blake3_hasher_init(&hasher);
-        c.blake3_hasher_update(&hasher, area.ptr, area.len);
-        c.blake3_hasher_finalize(&hasher, &out, out.len);
+        var hasher: cblake3.blake3_hasher = undefined;
+        cblake3.blake3_hasher_init(&hasher);
+        cblake3.blake3_hasher_update(&hasher, area.ptr, area.len);
+        cblake3.blake3_hasher_finalize(&hasher, &out, out.len);
     } else if (config.std) {
         std.crypto.hash.Blake3.hash(area, &out, .{});
     } else {
