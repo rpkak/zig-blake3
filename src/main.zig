@@ -5,10 +5,8 @@ const c = @cImport({
     @cInclude("blake3.h");
 });
 
-const stderr = std.io.getStdErr();
-const stdout = std.io.getStdOut();
-
 fn run() !void {
+    const stdout = std.io.getStdOut();
     if (std.os.argv.len != 2) {
         return error.OneArgRequired;
     }
@@ -39,6 +37,7 @@ fn run() !void {
 }
 
 pub fn main() u8 {
+    const stderr = std.io.getStdErr();
     run() catch |err| {
         stderr.writer().print("Error: {}\n", .{err}) catch unreachable;
         return 1;
