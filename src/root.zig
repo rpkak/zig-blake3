@@ -13,10 +13,6 @@ const KEYED_HASH: u8 = 1 << 4;
 const DERIVE_KEY_CONTEXT: u8 = 1 << 5;
 const DERIVE_KEY_MATERIAL: u8 = 1 << 6;
 
-const BLOCK_LEN_LOG = 6;
-const BLOCK_LEN = 1 << BLOCK_LEN_LOG;
-const BLOCK_LEN_MASK = BLOCK_LEN - 1;
-
 const CHUNK_LEN_LOG = 10;
 const CHUNK_LEN = 1 << CHUNK_LEN_LOG;
 
@@ -299,10 +295,16 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
     return struct {
         const Self = @This();
 
+        pub const block_length = 64;
+        pub const digest_length = 32;
+        pub const key_length = 32;
+
+        const block_length_mask = block_length - 1;
+
         pub const Options = struct {
             mode: union(enum) {
                 hash,
-                keyed_hash: [32]u8,
+                keyed_hash: [key_length]u8,
                 derive_key: []const u8,
             } = .hash,
         };
@@ -316,7 +318,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
 
         chunk_state_len: u32 = 0,
         chunk_state_chaining_value: [elements_per_8]Element,
-        input_buffer: [BLOCK_LEN]u8 = [_]u8{0} ** BLOCK_LEN,
+        input_buffer: [block_length]u8 = [_]u8{0} ** block_length,
 
         cv_stack: [(64 - CHUNK_LEN_LOG + 1) * elements_per_8]Element = undefined,
         cv_stack_len: u8 = 0,
@@ -589,9 +591,9 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                 t_1 = @truncate(t_vec >> @splat(32));
             }
 
-            inline for (0..(CHUNK_LEN / BLOCK_LEN)) |i| {
+            inline for (0..(CHUNK_LEN / block_length)) |i| {
                 var m: [16]CountVec = undefined;
-                blocksToVectors2(count, input[i * BLOCK_LEN ..], t_inc, half_half, &m);
+                blocksToVectors2(count, input[i * block_length ..], t_inc, half_half, &m);
 
                 compress2(
                     count,
@@ -599,7 +601,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                     &m,
                     t_0,
                     t_1,
-                    BLOCK_LEN,
+                    block_length,
                     if (i == 0)
                         flags | CHUNK_START
                     else if (i == 15)
@@ -626,7 +628,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                         self.key[0],
                         self.key[1],
                         m,
-                        .{ 0, 0, BLOCK_LEN, self.flags | PARENT },
+                        .{ 0, 0, block_length, self.flags | PARENT },
                         true,
                         &out,
                     );
@@ -646,7 +648,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                         &m,
                         0,
                         0,
-                        BLOCK_LEN,
+                        block_length,
                         self.flags | PARENT,
                         true,
                         self.cv_stack[elements_per_8 * (self.cv_stack_len - 2) ..][0..elements_per_8],
@@ -662,14 +664,14 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
         }
 
         fn startFlag(self: *const Self) u32 {
-            return if (self.chunk_state_len <= BLOCK_LEN)
+            return if (self.chunk_state_len <= block_length)
                 CHUNK_START
             else
                 0;
         }
 
-        fn compressChunkStateBlock(self: *const Self, input: *const [BLOCK_LEN]u8, output: *[elements_per_8]Element) void {
-            std.debug.assert(self.chunk_state_len & BLOCK_LEN_MASK == 0);
+        fn compressChunkStateBlock(self: *const Self, input: *const [block_length]u8, output: *[elements_per_8]Element) void {
+            std.debug.assert(self.chunk_state_len & block_length_mask == 0);
             if (third_approach) {
                 var m: [4]V(4) = undefined;
                 blocksToVectors3(1, input, undefined, &m);
@@ -681,7 +683,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                     .{
                         @truncate(self.t >> 0),
                         @truncate(self.t >> 32),
-                        BLOCK_LEN,
+                        block_length,
                         self.flags | self.startFlag() | if (self.chunk_state_len == CHUNK_LEN) CHUNK_END else 0,
                     },
                     true,
@@ -696,7 +698,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                     &m,
                     @truncate(self.t >> 0),
                     @truncate(self.t >> 32),
-                    BLOCK_LEN,
+                    block_length,
                     self.flags | self.startFlag() | if (self.chunk_state_len == CHUNK_LEN) CHUNK_END else 0,
                     true,
                     output,
@@ -707,21 +709,21 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
         fn updateChunkState(self: *Self, input_slice: []const u8) void {
             var input = input_slice;
             if (self.chunk_state_len != 0) {
-                const block_len = self.chunk_state_len & BLOCK_LEN_MASK;
-                const want = BLOCK_LEN_MASK & (BLOCK_LEN - block_len);
+                const block_len = self.chunk_state_len & block_length_mask;
+                const want = block_length_mask & (block_length - block_len);
                 const take = @min(want, input.len);
                 @memcpy(self.input_buffer[block_len..][0..take], input[0..take]);
                 input = input[take..];
                 self.chunk_state_len += take;
                 if (input.len != 0) {
                     self.compressChunkStateBlock(&self.input_buffer, &self.chunk_state_chaining_value);
-                    self.input_buffer = [_]u8{0} ** BLOCK_LEN;
+                    self.input_buffer = [_]u8{0} ** block_length;
                 }
             }
-            while (input.len > BLOCK_LEN) {
-                self.chunk_state_len += BLOCK_LEN;
-                self.compressChunkStateBlock(input[0..BLOCK_LEN], &self.chunk_state_chaining_value);
-                input = input[BLOCK_LEN..];
+            while (input.len > block_length) {
+                self.chunk_state_len += block_length;
+                self.compressChunkStateBlock(input[0..block_length], &self.chunk_state_chaining_value);
+                input = input[block_length..];
             }
             @memcpy(self.input_buffer[0..input.len], input);
             self.chunk_state_len += @intCast(input.len);
@@ -753,7 +755,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
 
                     self.pushCV(cv, self.t);
 
-                    self.input_buffer = [_]u8{0} ** BLOCK_LEN;
+                    self.input_buffer = [_]u8{0} ** block_length;
                     self.chunk_state_chaining_value = self.key;
                     self.chunk_state_len = 0;
                     self.t += 1;
@@ -820,13 +822,13 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                     blocksToVectors2(1, &self.input_buffer, undefined, false, m);
                 }
                 t = self.t;
-                b.* = if (self.chunk_state_len & BLOCK_LEN_MASK == 0 and self.chunk_state_len != 0) BLOCK_LEN else self.chunk_state_len & BLOCK_LEN_MASK;
+                b.* = if (self.chunk_state_len & block_length_mask == 0 and self.chunk_state_len != 0) block_length else self.chunk_state_len & block_length_mask;
                 d.* = self.flags | CHUNK_END | self.startFlag();
             } else {
                 h.* = self.key;
                 m.* = self.cv_stack[elements_per_8 * (cvs_remaining - 2) ..][0 .. 2 * elements_per_8].*;
                 t = 0;
-                b.* = BLOCK_LEN;
+                b.* = block_length;
                 d.* = self.flags | PARENT;
                 cvs_remaining -= 2;
             }
@@ -862,7 +864,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                 m[0..elements_per_8].* = self.cv_stack[elements_per_8 * (cvs_remaining - 1) ..][0..elements_per_8].*;
                 h.* = self.key;
                 t = 0;
-                b.* = BLOCK_LEN;
+                b.* = block_length;
                 d.* = self.flags | PARENT;
             }
             d.* |= ROOT;
@@ -984,7 +986,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                         &m,
                         splat(half_max_vec_len, 0),
                         splat(half_max_vec_len, 0),
-                        BLOCK_LEN,
+                        block_length,
                         self.flags | PARENT,
                         true,
                         &compress2_output,
@@ -1068,7 +1070,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                 &uncompressed_output,
                 splat(max_vec_len, 0),
                 splat(max_vec_len, 0),
-                BLOCK_LEN,
+                block_length,
                 self.flags | PARENT,
                 true,
                 out,
@@ -1089,16 +1091,16 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                 std.simd.repeat(4 * count, key[1]),
             };
 
-            for (0..CHUNK_LEN / BLOCK_LEN) |i| {
+            for (0..CHUNK_LEN / block_length) |i| {
                 var m: [4]V(4 * count) = undefined;
 
-                blocksToVectors3(count, input[BLOCK_LEN * i ..].ptr, 1, &m);
+                blocksToVectors3(count, input[block_length * i ..].ptr, 1, &m);
 
                 var tbd: V(4 * count) = undefined;
                 for (0..count) |j| {
                     tbd[4 * j + 0] = @truncate(t + j);
                     tbd[4 * j + 1] = @truncate((t + j) >> 32);
-                    tbd[4 * j + 2] = BLOCK_LEN;
+                    tbd[4 * j + 2] = block_length;
                     tbd[4 * j + 3] = if (i == 0) flags | CHUNK_START else if (i == 15) flags | CHUNK_END else flags;
                 }
 
@@ -1135,7 +1137,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
                     std.simd.repeat(4 * count, self.key[0]),
                     std.simd.repeat(4 * count, self.key[1]),
                     m,
-                    std.simd.repeat(4 * count, V(4){ 0, 0, BLOCK_LEN, self.flags | PARENT }),
+                    std.simd.repeat(4 * count, V(4){ 0, 0, block_length, self.flags | PARENT }),
                     true,
                     &compress3_output,
                 );

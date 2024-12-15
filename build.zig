@@ -1,7 +1,7 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+d   const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
     const valgrind = b.option(bool, "valgrind", "valgrind") orelse false;
