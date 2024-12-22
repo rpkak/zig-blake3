@@ -127,9 +127,7 @@ fn g2(
     b_vec.* = std.math.rotr(Vec, b_vec.* ^ c_vec.*, 7);
 }
 
-// output
-// inline has significant performance advantage.
-inline fn compress2(
+fn compress2(
     count: comptime_int,
     h: [8]V(count),
     m: *const [16]V(count),
@@ -458,9 +456,7 @@ pub fn Blake3(comptime_options: ComptimeOptions) type {
 
         /// Reads count blocks that have an offset of t_inc chunks to each other into vectors that can be used by compress2.
         /// half_half reorders the input to require less steps when reusing the output as an input.
-
-        // inline has significant performance advantage.
-        inline fn blocksToVectors2(count: comptime_int, input: [*]const u8, t_inc: usize, comptime half_half: bool, out: *[16]V(count)) void {
+        fn blocksToVectors2(count: comptime_int, input: [*]const u8, t_inc: usize, comptime half_half: bool, out: *[16]V(count)) void {
             const vec_len = @min(16, max_vec_len);
             var ordered_vecs: [count * @divExact(16, vec_len)]V(vec_len) = undefined;
 
